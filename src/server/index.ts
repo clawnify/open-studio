@@ -1,12 +1,6 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { mkdirSync, writeFileSync, existsSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
 import { query, get, run } from "./db.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = join(__dirname, "..", "..", "uploads");
-mkdirSync(UPLOADS_DIR, { recursive: true });
+import { putUpload, getUpload, readUploadAsBase64DataUrl } from "./uploads.js";
 
 const app = new OpenAPIHono();
 
@@ -154,36 +148,20 @@ app.post("/api/uploads", async (c) => {
   }
 
   const filename = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
-  const buffer = Buffer.from(await file.arrayBuffer());
-  writeFileSync(join(UPLOADS_DIR, filename), buffer);
+  const data = await file.arrayBuffer();
+  const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : ext === "svg" ? "image/svg+xml" : "image/png";
+  const url = await putUpload(filename, data, mime);
 
-  return c.json({ url: `/api/uploads/${filename}` }, 200);
+  return c.json({ url }, 200);
 });
 
 app.get("/api/uploads/:filename", async (c) => {
   const { filename } = c.req.param();
-  // Sanitize filename to prevent directory traversal
-  const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "");
-  const filePath = join(UPLOADS_DIR, safe);
+  const result = await getUpload(filename);
+  if (!result) return c.json({ error: "Not found" }, 404);
 
-  if (!existsSync(filePath)) {
-    return c.json({ error: "Not found" }, 404);
-  }
-
-  const { readFileSync } = await import("fs");
-  const data = readFileSync(filePath);
-  const ext = safe.split(".").pop()?.toLowerCase();
-  const mimeMap: Record<string, string> = {
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    svg: "image/svg+xml",
-  };
-
-  return new Response(data, {
-    headers: { "Content-Type": mimeMap[ext || "png"] || "application/octet-stream", "Cache-Control": "public, max-age=31536000" },
+  return new Response(result.data, {
+    headers: { "Content-Type": result.contentType, "Cache-Control": "public, max-age=31536000" },
   });
 });
 
@@ -247,17 +225,11 @@ app.openapi(generateImage, async (c) => {
     if (input_images?.length) {
       for (const imgUrl of input_images) {
         let url = imgUrl;
-        // Convert local uploads to base64 data URLs
+        // Convert local uploads to base64 data URLs for OpenRouter
         if (imgUrl.startsWith("/api/uploads/")) {
-          const filename = imgUrl.replace("/api/uploads/", "").replace(/[^a-zA-Z0-9._-]/g, "");
-          const filePath = join(UPLOADS_DIR, filename);
-          if (existsSync(filePath)) {
-            const { readFileSync } = await import("fs");
-            const buf = readFileSync(filePath);
-            const ext = filename.split(".").pop()?.toLowerCase() || "png";
-            const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/png";
-            url = `data:${mime};base64,${buf.toString("base64")}`;
-          }
+          const filename = imgUrl.replace("/api/uploads/", "");
+          const dataUrl = await readUploadAsBase64DataUrl(filename);
+          if (dataUrl) url = dataUrl;
         }
         content.push({ type: "image_url", image_url: { url } });
       }
@@ -301,18 +273,20 @@ app.openapi(generateImage, async (c) => {
     for (const img of message?.images || []) {
       const remoteUrl = img.image_url.url;
       try {
-        let buffer: Buffer;
+        let data: ArrayBuffer;
         if (remoteUrl.startsWith("data:")) {
-          // base64 data URL
           const base64 = remoteUrl.split(",")[1];
-          buffer = Buffer.from(base64, "base64");
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          data = bytes.buffer;
         } else {
           const imgRes = await fetch(remoteUrl);
-          buffer = Buffer.from(await imgRes.arrayBuffer());
+          data = await imgRes.arrayBuffer();
         }
         const filename = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
-        writeFileSync(join(UPLOADS_DIR, filename), buffer);
-        images.push({ url: `/api/uploads/${filename}` });
+        const url = await putUpload(filename, data, "image/png");
+        images.push({ url });
       } catch {
         // Fallback to remote URL if download fails
         images.push({ url: remoteUrl });
