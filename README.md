@@ -26,8 +26,8 @@ Unlike Higgsfield or Node Banana, this runs entirely on your own infrastructure.
 ## Quickstart
 
 ```bash
-git clone https://github.com/clawnify/flow-app.git
-cd flow-app
+git clone https://github.com/clawnify/open-studio.git
+cd open-studio
 cp .env.example .env
 # Add your OpenRouter API key to .env
 pnpm install
