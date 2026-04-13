@@ -25,12 +25,6 @@ export function Sidebar() {
 
   return (
     <aside class="w-[260px] bg-white border-r border-border-dim flex flex-col shrink-0">
-      <div class="p-4 border-b border-border-dim">
-        <h1 class="text-base font-bold text-gray-900 tracking-tight flex items-center gap-2">
-          <span class="w-5 h-5 bg-accent rounded-[5px] inline-block" />
-          Workflows
-        </h1>
-      </div>
       <div class="flex border-b border-border-dim">
         <button class={tabClass("nodes")} onClick={() => setTab("nodes")}>Nodes</button>
         <button class={tabClass("workflows")} onClick={() => setTab("workflows")}>Workflows</button>

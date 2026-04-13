@@ -124,26 +124,30 @@ export function useWorkflowState(): WorkflowContextValue {
     const pos = position || { x: 250 + Math.random() * 200, y: 150 + Math.random() * 200 };
     const id = nextNodeId();
 
-    let data: Record<string, unknown>;
-    switch (type) {
-      case "prompt":
-        data = { label: "Prompt", text: "" };
-        break;
-      case "generateImage":
-        data = { label: "Generate Image", model: "google/gemini-3.1-flash-image-preview", aspectRatio: "1:1", imageSize: "1K", status: "idle" };
-        break;
-      case "imageInput":
-        data = { label: "Image Input", imageUrl: "" };
-        break;
-      case "output":
-        data = { label: "Output", imageUrl: "", text: "" };
-        break;
-      default:
-        data = { label: type };
-    }
-
-    const newNode: Node = { id, type, position: pos, data };
-    setNodes((nds) => [...nds, newNode]);
+    setNodes((nds) => {
+      let data: Record<string, unknown>;
+      switch (type) {
+        case "prompt": {
+          const existingLabels = new Set(nds.filter((n) => n.type === "prompt").map((n) => (n.data as Record<string, unknown>).label));
+          let num = 1;
+          while (existingLabels.has(`Prompt ${num}`)) num++;
+          data = { label: `Prompt ${num}`, text: "" };
+          break;
+        }
+        case "generateImage":
+          data = { label: "Generate Image", model: "google/gemini-3.1-flash-image-preview", aspectRatio: "1:1", imageSize: "1K", status: "idle" };
+          break;
+        case "imageInput":
+          data = { label: "Image Input", imageUrl: "" };
+          break;
+        case "output":
+          data = { label: "Output", imageUrl: "", text: "" };
+          break;
+        default:
+          data = { label: type };
+      }
+      return [...nds, { id, type, position: pos, data } as Node];
+    });
   }, [setNodes]);
 
   const updateNodeData = useCallback((nodeId: string, data: Partial<Record<string, unknown>>) => {
@@ -153,7 +157,23 @@ export function useWorkflowState(): WorkflowContextValue {
   }, [setNodes]);
 
   const deleteNode = useCallback((nodeId: string) => {
-    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+    setNodes((nds) => {
+      // Find the label of the node being deleted
+      const deletedNode = nds.find((n) => n.id === nodeId);
+      const deletedLabel = deletedNode ? ((deletedNode.data as Record<string, unknown>).label as string) || nodeId : nodeId;
+
+      // Remove the node, and replace {{nodeId}} references in other prompt nodes with [Label]
+      const pattern = new RegExp(`\\{\\{${nodeId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\}\\}`, "g");
+      return nds
+        .filter((n) => n.id !== nodeId)
+        .map((n) => {
+          if (n.type !== "prompt") return n;
+          const text = (n.data as Record<string, unknown>).text as string;
+          if (!text || !pattern.test(text)) return n;
+          pattern.lastIndex = 0;
+          return { ...n, data: { ...n.data, text: text.replace(pattern, `[${deletedLabel}]`) } };
+        });
+    });
     setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
   }, [setNodes, setEdges]);
 
@@ -231,7 +251,15 @@ export function useWorkflowState(): WorkflowContextValue {
 
         switch (node.type) {
           case "prompt": {
-            outputs.set(nodeId, { text: (data.text as string) || "" });
+            let text = (data.text as string) || "";
+            // Resolve {{nodeId}} references to other prompt nodes' text
+            text = text.replace(/\{\{(.+?)\}\}/g, (_match, refId: string) => {
+              const ref = nodeMap.get(refId.trim());
+              if (!ref) return _match;
+              const refData = ref.data as Record<string, unknown>;
+              return (refData.text as string) || "";
+            });
+            outputs.set(nodeId, { text });
             break;
           }
           case "imageInput": {

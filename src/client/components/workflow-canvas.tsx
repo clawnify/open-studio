@@ -4,6 +4,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  useReactFlow,
   type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -28,6 +29,8 @@ export function WorkflowCanvas() {
     []
   );
 
+  const { screenToFlowPosition } = useReactFlow();
+
   const onDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -38,11 +41,13 @@ export function WorkflowCanvas() {
       e.preventDefault();
       const type = e.dataTransfer?.getData("application/reactflow");
       if (!type) return;
-      const bounds = (e.target as HTMLElement).closest(".react-flow")?.getBoundingClientRect();
-      if (!bounds) return;
-      addNode(type, { x: e.clientX - bounds.left - 100, y: e.clientY - bounds.top - 20 });
+      const position = screenToFlowPosition({
+        x: e.clientX,
+        y: e.clientY,
+      });
+      addNode(type, position);
     },
-    [addNode]
+    [addNode, screenToFlowPosition]
   );
 
   if (!activeWorkflow) {
@@ -65,7 +70,6 @@ export function WorkflowCanvas() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         nodeTypes={nodeTypes}
-        fitView
         snapToGrid
         snapGrid={[16, 16]}
         defaultEdgeOptions={{ animated: true, type: "smoothstep" }}

@@ -5,3 +5,5 @@ data.db-wal
 data.db-shm
 uploads/
 .env
+.dev.vars
+.wrangler/

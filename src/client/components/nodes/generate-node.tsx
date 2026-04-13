@@ -1,19 +1,16 @@
 import { Handle, Position } from "@xyflow/react";
 import { useWorkflow } from "../../context";
+import { NodeHeader } from "./node-header";
 import type { GenerateNodeData } from "../../types";
 
 interface Props { id: string; data: GenerateNodeData; }
 
 export function GenerateNode({ id, data }: Props) {
-  const { updateNodeData, deleteNode, models } = useWorkflow();
+  const { updateNodeData, models } = useWorkflow();
   const selectClass = "w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs py-1 px-2 outline-none cursor-pointer appearance-none focus:border-accent";
   return (
     <div class={`flow-node generate-node status-${data.status}`}>
-      <div class="flex items-center gap-1.5 px-2.5 py-2 font-semibold text-[11px] uppercase tracking-wide border-b border-border-dim bg-emerald-50 text-emerald-600">
-        <span class="text-sm">&#9881;</span>
-        <span class="flex-1">{data.label}</span>
-        <button class="node-delete bg-transparent border-none text-inherit text-base cursor-pointer opacity-0 px-0.5 leading-none transition-opacity hover:!opacity-100 hover:text-red-500" onClick={() => deleteNode(id)}>&times;</button>
-      </div>
+      <NodeHeader id={id} label={data.label} icon="&#9881;" bgClass="bg-emerald-50" textClass="text-emerald-600" />
       <div class="p-2.5 flex flex-col gap-1.5">
         <label class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Model</label>
         <select class={selectClass} value={data.model} onChange={(e) => updateNodeData(id, { model: (e.target as HTMLSelectElement).value })}>

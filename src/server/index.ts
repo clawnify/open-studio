@@ -1,8 +1,16 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { query, get, run } from "./db.js";
-import { putUpload, getUpload, readUploadAsBase64DataUrl } from "./uploads.js";
+import { initDB, query, get, run } from "./db.js";
+import { initBucket, putUpload, getUpload, readUploadAsBase64DataUrl } from "./uploads.js";
 
-const app = new OpenAPIHono();
+type Env = { Bindings: { DB: D1Database; BUCKET: R2Bucket; OPENROUTER_API_KEY: string } };
+
+const app = new OpenAPIHono<Env>();
+
+app.use("*", async (c, next) => {
+  initDB(c.env.DB);
+  initBucket(c.env.BUCKET);
+  await next();
+});
 
 // ── Schemas ──────────────────────────────────────────────────────────
 
@@ -45,7 +53,7 @@ const getWorkflow = createRoute({
 
 app.openapi(getWorkflow, async (c) => {
   const { id } = c.req.valid("param");
-  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", id);
+  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [id]);
   if (!row) return c.json({ error: "Not found" }, 404);
   return c.json(row, 200);
 });
@@ -65,9 +73,9 @@ app.openapi(createWorkflow, async (c) => {
   const { name } = c.req.valid("json");
   const result = await run(
     "INSERT INTO workflows (name) VALUES (?)",
-    name || "Untitled Workflow"
+    [name || "Untitled Workflow"],
   );
-  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", result.lastInsertRowid);
+  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [result.lastInsertRowid]);
   return c.json(row!, 200);
 });
 
@@ -100,18 +108,14 @@ const updateWorkflow = createRoute({
 app.openapi(updateWorkflow, async (c) => {
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
-  const existing = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", id);
+  const existing = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [id]);
   if (!existing) return c.json({ error: "Not found" }, 404);
 
   await run(
     `UPDATE workflows SET name = ?, nodes = ?, edges = ?, viewport = ?, updated_at = datetime('now') WHERE id = ?`,
-    body.name ?? existing.name,
-    body.nodes ?? existing.nodes,
-    body.edges ?? existing.edges,
-    body.viewport ?? existing.viewport,
-    id
+    [body.name ?? existing.name, body.nodes ?? existing.nodes, body.edges ?? existing.edges, body.viewport ?? existing.viewport, id],
   );
-  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", id);
+  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [id]);
   return c.json(row!, 200);
 });
 
@@ -128,7 +132,7 @@ const deleteWorkflow = createRoute({
 
 app.openapi(deleteWorkflow, async (c) => {
   const { id } = c.req.valid("param");
-  await run("DELETE FROM workflows WHERE id = ?", id);
+  await run("DELETE FROM workflows WHERE id = ?", [id]);
   return c.json({ ok: true }, 200);
 });
 
@@ -167,8 +171,6 @@ app.get("/api/uploads/:filename", async (c) => {
 
 // ── Image generation (OpenRouter proxy) ──────────────────────────────
 
-// Image-only models (no text output)
-// Models that only output images (no text), use modalities: ["image"]
 const IMAGE_ONLY_MODELS = new Set([
   "black-forest-labs/flux.2-max",
   "black-forest-labs/flux.2-klein-4b",
@@ -212,7 +214,7 @@ const generateImage = createRoute({
 
 app.openapi(generateImage, async (c) => {
   const { prompt, model, aspect_ratio, image_size, input_images } = c.req.valid("json");
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = c.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     return c.json({ error: "OPENROUTER_API_KEY env variable not set" }, 500);
   }
@@ -220,12 +222,10 @@ app.openapi(generateImage, async (c) => {
   try {
     const modalities = IMAGE_ONLY_MODELS.has(model) ? ["image"] : ["image", "text"];
 
-    // Build message content: text + optional input images
     const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
     if (input_images?.length) {
       for (const imgUrl of input_images) {
         let url = imgUrl;
-        // Convert local uploads to base64 data URLs for OpenRouter
         if (imgUrl.startsWith("/api/uploads/")) {
           const filename = imgUrl.replace("/api/uploads/", "");
           const dataUrl = await readUploadAsBase64DataUrl(filename);
@@ -268,7 +268,6 @@ app.openapi(generateImage, async (c) => {
 
     const message = data.choices?.[0]?.message;
 
-    // Download images locally so they persist
     const images: Array<{ url: string }> = [];
     for (const img of message?.images || []) {
       const remoteUrl = img.image_url.url;
@@ -288,7 +287,6 @@ app.openapi(generateImage, async (c) => {
         const url = await putUpload(filename, data, "image/png");
         images.push({ url });
       } catch {
-        // Fallback to remote URL if download fails
         images.push({ url: remoteUrl });
       }
     }
@@ -359,7 +357,7 @@ app.openapi(listGenerations, async (c) => {
   const { workflowId } = c.req.valid("param");
   const rows = await query<z.infer<typeof GenerationSchema>>(
     "SELECT * FROM generations WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 50",
-    workflowId
+    [workflowId],
   );
   return c.json(rows, 200);
 });
@@ -393,16 +391,49 @@ app.openapi(saveGeneration, async (c) => {
   const body = c.req.valid("json");
   const result = await run(
     "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    body.workflow_id,
-    body.node_id,
-    body.prompt,
-    body.model,
-    body.image_url,
-    body.status,
-    body.error ?? null
+    [body.workflow_id, body.node_id, body.prompt, body.model, body.image_url, body.status, body.error ?? null],
   );
-  const row = await get<z.infer<typeof GenerationSchema>>("SELECT * FROM generations WHERE id = ?", result.lastInsertRowid);
+  const row = await get<z.infer<typeof GenerationSchema>>("SELECT * FROM generations WHERE id = ?", [result.lastInsertRowid]);
   return c.json(row!, 200);
+});
+
+// ── Suggest node name ────────────────────────────────────────────────
+
+app.post("/api/suggest-name", async (c) => {
+  const { text, existingLabels } = await c.req.json<{ text: string; existingLabels?: string[] }>();
+  if (!text?.trim()) return c.json({ name: "" }, 200);
+  const apiKey = c.env.OPENROUTER_API_KEY;
+  if (!apiKey) return c.json({ name: "" }, 200);
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-3.1-flash-lite-preview",
+        messages: [
+          { role: "system", content: `You extract a short 1-2 word title from text, using the broadest general category. Examples: "dog" → "Animal", "rose" → "Flower", "Ferrari" → "Car", "Paris at night" → "Location", "Tokyo street" → "Location", "a red sports car on a mountain" → "Vehicle", "sunset over ocean" → "Landscape". Always prefer the broadest category (Animal, Vehicle, Location, Landscape, Person, Food, Object, Building). If the text has no subject at all, return {"name":""}. Do NOT duplicate any of these existing labels: [${(existingLabels || []).join(", ")}]. Respond with JSON {"name":"..."} only.` },
+          { role: "user", content: text.slice(0, 500) },
+        ],
+        response_format: { type: "json_object" },
+        max_tokens: 30,
+      }),
+    });
+    if (!response.ok) return c.json({ name: "" }, 200);
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const raw = data.choices?.[0]?.message?.content?.trim() || "";
+    try {
+      const parsed = JSON.parse(raw) as { name?: string };
+      return c.json({ name: (parsed.name || "").slice(0, 40) }, 200);
+    } catch {
+      return c.json({ name: "" }, 200);
+    }
+  } catch {
+    return c.json({ name: "" }, 200);
+  }
 });
 
 // ── OpenAPI doc ──────────────────────────────────────────────────────
