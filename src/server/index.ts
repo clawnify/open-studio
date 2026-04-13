@@ -6,6 +6,11 @@ type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: 
 
 const app = new OpenAPIHono<Env>();
 
+app.onError((err, c) => {
+  console.error(err);
+  return c.json({ error: err.message || String(err) }, 500);
+});
+
 let schemaApplied = false;
 
 app.use("*", async (c, next) => {
