@@ -1,53 +1,47 @@
-# OpenClaw Flow App: The Open-Source Higgsfield Alternative for SaaS
+# Open Studio
 
-A visual AI image generation studio with a justified gallery and node-based workflow editor. Part of the [OpenClaw](https://github.com/openclaw/openclaw) ecosystem. Zero cloud dependencies — runs locally with SQLite.
-
-Built with **Preact + Tailwind CSS + Hono + SQLite**. Ships with a dual-mode UI: a quick generation view (prompt → gallery) and a node-based workflow editor for building reusable pipelines.
-
-## What Is It?
-
-Clawnify Flow App is a production-ready AI image generation studio designed for the OpenClaw community. Think of it as an open-source Higgsfield alternative — a visual image generation tool you can self-host, customize, and embed in any SaaS product.
-
-Unlike Higgsfield or Node Banana, this runs entirely on your own infrastructure. Bring your own OpenRouter API key, generate images with models like Gemini, FLUX, GPT Image, and more — all stored locally with no vendor lock-in.
+A visual AI image generation studio with a justified gallery and node-based workflow editor. Built with **Preact + Tailwind CSS + Hono + D1**. Deploys to Cloudflare Workers via [Clawnify](https://clawnify.com).
 
 ## Features
 
-- **Quick Generate** — Higgsfield-style prompt bar with model, aspect ratio, resolution, and batch count selectors
+- **Quick Generate** — prompt bar with model, aspect ratio, resolution, and batch count selectors
 - **Justified gallery** — generated images displayed in a pixel-perfect justified layout preserving aspect ratios
 - **Image-to-image** — drag a generated image or upload a file as source for the next generation
 - **Node-based workflows** — React Flow editor for building reusable multi-step generation pipelines
+- **Prompt variables** — type `/` in a prompt node to reference another prompt's content with `{{}}` syntax, rendered as inline pills
+- **Auto-naming** — prompt nodes automatically get a descriptive title via Gemini 3.1 Flash Lite on blur
+- **Editable titles** — double-click any node title to rename it
 - **10+ models** — Gemini 3.1 Flash, Gemini 3 Pro, GPT Image 1, FLUX.2 Max, SeedDream 4.5, and more via OpenRouter
-- **Local file uploads** — reference images stored locally, served via the API
-- **Generation history** — all generations persisted to SQLite with prompt, model, and image
+- **Generation history** — all generations persisted with prompt, model, and image
 - **Dual-mode UI** — human-optimized + AI-agent-optimized (`?agent=true`)
 - **Lightbox** — click any image to view full-size
-- **Drag-to-reuse** — drag generated images into the prompt bar to use as input for the next generation
+- **Drag-to-reuse** — drag generated images into the prompt bar to use as input
 
 ## Quickstart
 
 ```bash
 git clone https://github.com/clawnify/open-studio.git
 cd open-studio
-cp .env.example .env
-# Add your OpenRouter API key to .env
 pnpm install
-pnpm run dev
 ```
 
-Open `http://localhost:5177` in your browser. Data persists in `data.db`, uploads in `uploads/`.
-
-### Agent Mode (for OpenClaw / Browser-Use)
-
-Append `?agent=true` to the URL:
+Create a `.dev.vars` file with your OpenRouter API key:
 
 ```
-http://localhost:5177/?agent=true
+OPENROUTER_API_KEY=your-key-here
 ```
 
-This activates an agent-friendly UI with:
-- Explicit delete buttons always visible (no hover-to-reveal)
-- Large click targets for reliable browser automation
-- All controls accessible without drag interactions
+Start the dev server:
+
+```bash
+pnpm dev
+```
+
+Open `http://localhost:5173` in your browser. The database schema is applied automatically on startup.
+
+### Agent Mode
+
+Append `?agent=true` to the URL for an agent-friendly UI with always-visible delete buttons and large click targets.
 
 ## Tech Stack
 
@@ -55,14 +49,15 @@ This activates an agent-friendly UI with:
 |-------|-----------|
 | **Frontend** | Preact, TypeScript, Tailwind CSS v4, Vite |
 | **Node Editor** | React Flow (@xyflow/react) via Preact compat |
-| **Backend** | Hono, Node.js |
-| **Database** | SQLite (better-sqlite3) |
+| **Backend** | Hono (Cloudflare Worker) |
+| **Database** | D1 (SQLite at the edge) |
+| **Storage** | R2 (file uploads) |
 | **AI** | OpenRouter API (chat completions + image generation) |
 
 ### Prerequisites
 
 - Node.js 20+
-- pnpm (or npm/yarn)
+- pnpm
 - [OpenRouter API key](https://openrouter.ai/keys)
 
 ## Architecture
@@ -70,31 +65,25 @@ This activates an agent-friendly UI with:
 ```
 src/
   server/
-    schema.sql  — SQLite schema (workflows, generations)
-    db.ts       — SQLite wrapper
-    index.ts    — Hono REST API (workflows, generations, uploads, generate proxy)
-    dev.ts      — Dev server with .env loading
+    index.ts    — Hono API with D1 middleware
+    db.ts       — D1-native database adapter
+    uploads.ts  — R2 file storage adapter
+    schema.sql  — Database schema (workflows, generations)
   client/
-    app.tsx           — Root component with Generate/Workflows tab switch
+    app.tsx           — Root component with Generate/Workflows tabs
     context.tsx       — Preact context for workflow state
-    hooks/use-workflow.ts — Workflow + flow state management + execution engine
+    hooks/use-workflow.ts — Workflow state management + execution engine
     components/
-      quick-generate.tsx  — Higgsfield-style generation view with justified gallery
+      quick-generate.tsx  — Generation view with justified gallery
       workflow-canvas.tsx — React Flow canvas wrapper
-      sidebar.tsx         — Workflow list + node palette + history
+      sidebar.tsx         — Node palette + workflow list + history
       toolbar.tsx         — Workflow name + save/execute buttons
       nodes/
-        prompt-node.tsx       — Text prompt input node
+        node-header.tsx       — Shared editable node header
+        prompt-node.tsx       — Text prompt with / variable autocomplete
         generate-node.tsx     — AI image generation node
         image-input-node.tsx  — Reference image upload node
         output-node.tsx       — Result display node
-```
-
-### Data Model
-
-```sql
-workflows   (id, name, nodes JSON, edges JSON, viewport JSON, created_at, updated_at)
-generations (id, workflow_id, node_id, prompt, model, image_url, status, error, created_at)
 ```
 
 ### API Endpoints
@@ -110,12 +99,15 @@ generations (id, workflow_id, node_id, prompt, model, image_url, status, error, 
 | GET | `/api/models` | List available image models |
 | GET | `/api/generations/:workflowId` | List generations for a workflow |
 | POST | `/api/generations` | Save a generation record |
+| POST | `/api/suggest-name` | Auto-suggest a node title via Gemini |
 | POST | `/api/uploads` | Upload an image file |
 | GET | `/api/uploads/:filename` | Serve an uploaded image |
 
-## Community & Contributions
+## Deploy
 
-This project is part of the [OpenClaw](https://github.com/openclaw/openclaw) ecosystem. Contributions are welcome — open an issue or submit a PR.
+```bash
+npx clawnify deploy
+```
 
 ## License
 
