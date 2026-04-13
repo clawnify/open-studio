@@ -28,6 +28,7 @@ export interface ModelOption {
 export interface PromptNodeData {
   label: string;
   text: string;
+  isInput?: boolean;
 }
 
 export interface GenerateNodeData {
@@ -43,6 +44,7 @@ export interface GenerateNodeData {
 export interface ImageInputNodeData {
   label: string;
   imageUrl: string;
+  isInput?: boolean;
 }
 
 export interface OutputNodeData {

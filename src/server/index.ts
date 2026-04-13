@@ -436,6 +436,220 @@ app.post("/api/suggest-name", async (c) => {
   }
 });
 
+// ── Public workflow list (with input schema) ─────────────────────────
+
+app.get("/api/v1/workflows", async (c) => {
+  const rows = await query<{ id: number; name: string; nodes: string; created_at: string; updated_at: string }>(
+    "SELECT id, name, nodes, created_at, updated_at FROM workflows ORDER BY updated_at DESC",
+  );
+
+  const workflows = rows.map((wf) => {
+    const nodes = JSON.parse(wf.nodes) as Array<{ id: string; type: string; data: Record<string, unknown> }>;
+    const inputs = nodes
+      .filter((n) => (n.type === "prompt" || n.type === "imageInput") && n.data.isInput)
+      .map((n) => ({
+        node_id: n.id,
+        type: n.type === "prompt" ? "text" as const : "image_url" as const,
+        label: (n.data.label as string) || n.id,
+      }));
+    return { id: wf.id, name: wf.name, inputs, created_at: wf.created_at, updated_at: wf.updated_at };
+  });
+
+  return c.json(workflows, 200);
+});
+
+// ── Execute workflow ──────────────────────────────────────────────────
+
+app.post("/api/v1/workflows/:id/execute", async (c) => {
+  const { id } = c.req.param();
+  const apiKey = c.env.OPENROUTER_API_KEY;
+  if (!apiKey) return c.json({ error: "OPENROUTER_API_KEY not set" }, 500);
+
+  const wf = await get<{ id: number; nodes: string; edges: string }>(
+    "SELECT id, nodes, edges FROM workflows WHERE id = ?", [id],
+  );
+  if (!wf) return c.json({ error: "Workflow not found" }, 404);
+
+  const body = await c.req.json<{ inputs?: Record<string, string> }>().catch(() => ({ inputs: {} }));
+  const inputOverrides = body.inputs || {};
+
+  const nodes = JSON.parse(wf.nodes) as Array<{ id: string; type: string; data: Record<string, unknown> }>;
+  const edges = JSON.parse(wf.edges) as Array<{ source: string; target: string }>;
+
+  // Apply input overrides to isInput nodes
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  for (const [nodeId, value] of Object.entries(inputOverrides)) {
+    const node = nodeMap.get(nodeId);
+    if (!node) continue;
+    if (node.type === "prompt" && node.data.isInput) {
+      node.data.text = value;
+    } else if (node.type === "imageInput" && node.data.isInput) {
+      node.data.imageUrl = value;
+    }
+  }
+
+  // Topological sort
+  const inDegree = new Map<string, number>();
+  const adjList = new Map<string, string[]>();
+  nodes.forEach((n) => { inDegree.set(n.id, 0); adjList.set(n.id, []); });
+  edges.forEach((e) => {
+    inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
+    adjList.get(e.source)?.push(e.target);
+  });
+
+  const queue: string[] = [];
+  inDegree.forEach((deg, nid) => { if (deg === 0) queue.push(nid); });
+
+  const sorted: string[] = [];
+  while (queue.length > 0) {
+    const nid = queue.shift()!;
+    sorted.push(nid);
+    for (const next of adjList.get(nid) || []) {
+      const newDeg = (inDegree.get(next) || 1) - 1;
+      inDegree.set(next, newDeg);
+      if (newDeg === 0) queue.push(next);
+    }
+  }
+
+  // Execute nodes in topological order
+  const outputs = new Map<string, { text?: string; imageUrl?: string }>();
+  const results: Array<{ node_id: string; type: string; label: string; output: Record<string, unknown> }> = [];
+
+  for (const nodeId of sorted) {
+    const node = nodeMap.get(nodeId);
+    if (!node) continue;
+
+    const incoming = edges.filter((e) => e.target === nodeId);
+    let inputText = "";
+    const inputImages: string[] = [];
+    for (const edge of incoming) {
+      const out = outputs.get(edge.source);
+      if (out?.text) inputText += (inputText ? "\n" : "") + out.text;
+      if (out?.imageUrl) inputImages.push(out.imageUrl);
+    }
+
+    switch (node.type) {
+      case "prompt": {
+        let text = (node.data.text as string) || "";
+        text = text.replace(/\{\{(.+?)\}\}/g, (_match, refId: string) => {
+          const ref = nodeMap.get(refId.trim());
+          return ref ? ((ref.data.text as string) || "") : _match;
+        });
+        outputs.set(nodeId, { text });
+        results.push({ node_id: nodeId, type: "prompt", label: (node.data.label as string) || nodeId, output: { text } });
+        break;
+      }
+      case "imageInput": {
+        const imageUrl = (node.data.imageUrl as string) || "";
+        outputs.set(nodeId, { imageUrl });
+        results.push({ node_id: nodeId, type: "imageInput", label: (node.data.label as string) || nodeId, output: { imageUrl } });
+        break;
+      }
+      case "generateImage": {
+        const prompt = inputText || "A beautiful image";
+        const model = (node.data.model as string) || "google/gemini-3.1-flash-image-preview";
+        const aspectRatio = (node.data.aspectRatio as string) || "1:1";
+        const imageSize = (node.data.imageSize as string) || "1K";
+
+        const modalities = IMAGE_ONLY_MODELS.has(model) ? ["image"] : ["image", "text"];
+        const msgContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+        for (const imgUrl of inputImages) {
+          let url = imgUrl;
+          if (imgUrl.startsWith("/api/uploads/")) {
+            const dataUrl = await readUploadAsBase64DataUrl(imgUrl.replace("/api/uploads/", ""));
+            if (dataUrl) url = dataUrl;
+          }
+          msgContent.push({ type: "image_url", image_url: { url } });
+        }
+        msgContent.push({ type: "text", text: prompt });
+
+        try {
+          const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": "https://openclaw.app",
+              "X-Title": "Flow Studio",
+            },
+            body: JSON.stringify({
+              model,
+              messages: [{ role: "user", content: msgContent }],
+              modalities,
+              image_config: { aspect_ratio: aspectRatio, image_size: imageSize },
+            }),
+          });
+
+          if (!response.ok) {
+            const err = await response.text();
+            results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: `OpenRouter error: ${err}` } });
+            outputs.set(nodeId, { text: prompt });
+            continue;
+          }
+
+          const genData = (await response.json()) as {
+            choices?: Array<{ message?: { content?: string; images?: Array<{ image_url: { url: string } }> } }>;
+          };
+          const message = genData.choices?.[0]?.message;
+
+          let imageUrl = "";
+          for (const img of message?.images || []) {
+            const remoteUrl = img.image_url.url;
+            try {
+              let imgData: ArrayBuffer;
+              if (remoteUrl.startsWith("data:")) {
+                const b64 = remoteUrl.split(",")[1];
+                const bin = atob(b64);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                imgData = bytes.buffer;
+              } else {
+                imgData = await (await fetch(remoteUrl)).arrayBuffer();
+              }
+              const fname = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
+              imageUrl = await putUpload(fname, imgData, "image/png");
+            } catch {
+              imageUrl = remoteUrl;
+            }
+            break; // take first image
+          }
+
+          outputs.set(nodeId, { imageUrl, text: prompt });
+          results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { imageUrl, text: message?.content || undefined } });
+
+          // Save generation
+          await run(
+            "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [wf.id, nodeId, prompt, model, imageUrl || null, "success", null],
+          );
+        } catch (err) {
+          outputs.set(nodeId, { text: prompt });
+          results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: String(err) } });
+          await run(
+            "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [wf.id, nodeId, prompt, model, null, "error", String(err)],
+          );
+        }
+        break;
+      }
+      case "output": {
+        const lastImage = inputImages[inputImages.length - 1] || "";
+        outputs.set(nodeId, { imageUrl: lastImage, text: inputText });
+        results.push({ node_id: nodeId, type: "output", label: (node.data.label as string) || nodeId, output: { imageUrl: lastImage || undefined, text: inputText || undefined } });
+        break;
+      }
+    }
+  }
+
+  // Return output nodes as the primary result
+  const outputNodes = results.filter((r) => r.type === "output");
+  return c.json({
+    workflow_id: wf.id,
+    outputs: outputNodes.map((r) => r.output),
+    all_nodes: results,
+  }, 200);
+});
+
 // ── OpenAPI doc ──────────────────────────────────────────────────────
 
 app.doc("/openapi.json", { openapi: "3.0.0", info: { title: "Flow Studio API", version: "3.0.0" } });

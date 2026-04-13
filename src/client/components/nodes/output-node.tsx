@@ -1,13 +1,14 @@
 import { Handle, Position } from "@xyflow/react";
-import { useWorkflow } from "../../context";
 import { NodeHeader } from "./node-header";
+import { NodeToolbar } from "./node-toolbar";
 import type { OutputNodeData } from "../../types";
 
 interface Props { id: string; data: OutputNodeData; }
 
 export function OutputNode({ id, data }: Props) {
   return (
-    <div class="flow-node">
+    <div class="flow-node relative">
+      <NodeToolbar id={id} />
       <NodeHeader id={id} label={data.label} icon="&#127912;" bgClass="bg-amber-50" textClass="text-amber-600" />
       <div class="p-2.5 flex flex-col gap-1.5">
         {data.imageUrl && <div class="rounded overflow-hidden"><img class="block w-full max-h-[220px] object-cover" src={data.imageUrl} alt="Output" /></div>}

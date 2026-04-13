@@ -16,17 +16,86 @@ function nextNodeId() {
   return `node_${++nodeIdCounter}_${Date.now()}`;
 }
 
+const MAX_HISTORY = 50;
+
+interface HistoryEntry {
+  nodes: Node[];
+  edges: Edge[];
+}
+
 export function useWorkflowState(): WorkflowContextValue {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChangeBase] = useNodesState([]);
+  const [edges, setEdges, onEdgesChangeBase] = useEdgesState([]);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [generations, setGenerations] = useState<Generation[]>([]);
   const [executing, setExecuting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const activeIdRef = useRef<number | null>(null);
+
+  // ── Undo / Redo ──────────────────────────────────────────────────
+  const undoStack = useRef<HistoryEntry[]>([]);
+  const redoStack = useRef<HistoryEntry[]>([]);
+  const nodesRef = useRef<Node[]>(nodes);
+  nodesRef.current = nodes;
+  const edgesRef = useRef<Edge[]>(edges);
+  edgesRef.current = edges;
+  const isUndoRedoRef = useRef(false);
+
+  const pushHistory = useCallback(() => {
+    if (isUndoRedoRef.current) return;
+    undoStack.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    if (undoStack.current.length > MAX_HISTORY) undoStack.current.shift();
+    redoStack.current = [];
+  }, []);
+
+  const undo = useCallback(() => {
+    const entry = undoStack.current.pop();
+    if (!entry) return;
+    redoStack.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    isUndoRedoRef.current = true;
+    setNodes(entry.nodes);
+    setEdges(entry.edges);
+    requestAnimationFrame(() => { isUndoRedoRef.current = false; });
+  }, [setNodes, setEdges]);
+
+  const redo = useCallback(() => {
+    const entry = redoStack.current.pop();
+    if (!entry) return;
+    undoStack.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    isUndoRedoRef.current = true;
+    setNodes(entry.nodes);
+    setEdges(entry.edges);
+    requestAnimationFrame(() => { isUndoRedoRef.current = false; });
+  }, [setNodes, setEdges]);
+
+  // Wrap change handlers to snapshot before structural changes
+  const onNodesChange = useCallback((changes: any) => {
+    const hasStructural = changes.some((c: any) => c.type === "remove" || c.type === "add");
+    if (hasStructural) pushHistory();
+    onNodesChangeBase(changes);
+  }, [onNodesChangeBase, pushHistory]);
+
+  const onEdgesChange = useCallback((changes: any) => {
+    const hasStructural = changes.some((c: any) => c.type === "remove" || c.type === "add");
+    if (hasStructural) pushHistory();
+    onEdgesChangeBase(changes);
+  }, [onEdgesChangeBase, pushHistory]);
+
+  // Keyboard shortcut: Cmd+Z / Cmd+Shift+Z
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [undo, redo]);
 
   const isAgent = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
@@ -117,10 +186,12 @@ export function useWorkflowState(): WorkflowContextValue {
   }, []);
 
   const onConnect = useCallback((connection: Connection) => {
+    pushHistory();
     setEdges((eds) => addEdge({ ...connection, animated: true }, eds));
-  }, [setEdges]);
+  }, [setEdges, pushHistory]);
 
   const addNode = useCallback((type: string, position?: { x: number; y: number }) => {
+    pushHistory();
     const pos = position || { x: 250 + Math.random() * 200, y: 150 + Math.random() * 200 };
     const id = nextNodeId();
 
@@ -154,9 +225,10 @@ export function useWorkflowState(): WorkflowContextValue {
     setNodes((nds) =>
       nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, ...data } } : n))
     );
-  }, [setNodes]);
+  }, [setNodes, pushHistory]);
 
   const deleteNode = useCallback((nodeId: string) => {
+    pushHistory();
     setNodes((nds) => {
       // Find the label of the node being deleted
       const deletedNode = nds.find((n) => n.id === nodeId);
@@ -175,7 +247,7 @@ export function useWorkflowState(): WorkflowContextValue {
         });
     });
     setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, pushHistory]);
 
   const saveWorkflow = useCallback(async () => {
     if (!activeIdRef.current) return;

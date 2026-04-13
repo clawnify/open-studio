@@ -4,6 +4,7 @@ import type { Node } from "@xyflow/react";
 import { useWorkflow } from "../../context";
 import { api } from "../../api";
 import { NodeHeader } from "./node-header";
+import { NodeToolbar } from "./node-toolbar";
 import type { PromptNodeData } from "../../types";
 
 interface Props { id: string; data: PromptNodeData; }
@@ -303,7 +304,8 @@ export function PromptNode({ id, data }: Props) {
   }, [showMenu, filtered, menuIndex, promptNodes.length, insertReference]);
 
   return (
-    <div class="flow-node">
+    <div class="flow-node relative">
+      <NodeToolbar id={id} isInput={data.isInput} onToggleInput={(v) => updateNodeData(id, { isInput: v })} />
       <NodeHeader id={id} label={data.label} icon="&#9998;" bgClass="bg-violet-50" textClass="text-violet-600" />
       <div class="p-2.5 flex flex-col gap-1.5 relative">
         <div

@@ -3,7 +3,6 @@ import {
   ReactFlow,
   Background,
   Controls,
-  MiniMap,
   useReactFlow,
   type NodeTypes,
 } from "@xyflow/react";
@@ -77,7 +76,7 @@ export function WorkflowCanvas() {
       >
         <Background gap={16} size={1} />
         <Controls />
-        <MiniMap nodeStrokeWidth={3} zoomable pannable style={{ background: "#1e1e2e" }} />
+
       </ReactFlow>
     </div>
   );

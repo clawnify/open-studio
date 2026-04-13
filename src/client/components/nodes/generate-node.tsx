@@ -1,6 +1,7 @@
 import { Handle, Position } from "@xyflow/react";
 import { useWorkflow } from "../../context";
 import { NodeHeader } from "./node-header";
+import { NodeToolbar } from "./node-toolbar";
 import type { GenerateNodeData } from "../../types";
 
 interface Props { id: string; data: GenerateNodeData; }
@@ -9,7 +10,8 @@ export function GenerateNode({ id, data }: Props) {
   const { updateNodeData, models } = useWorkflow();
   const selectClass = "w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs py-1 px-2 outline-none cursor-pointer appearance-none focus:border-accent";
   return (
-    <div class={`flow-node generate-node status-${data.status}`}>
+    <div class={`flow-node generate-node status-${data.status} relative`}>
+      <NodeToolbar id={id} />
       <NodeHeader id={id} label={data.label} icon="&#9881;" bgClass="bg-emerald-50" textClass="text-emerald-600" />
       <div class="p-2.5 flex flex-col gap-1.5">
         <label class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Model</label>

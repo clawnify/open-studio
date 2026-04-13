@@ -53,12 +53,6 @@ export function NodeHeader({ id, label, icon, bgClass, textClass }: Props) {
           {label}
         </span>
       )}
-      <button
-        class="node-delete bg-transparent border-none text-inherit text-base cursor-pointer opacity-0 px-0.5 leading-none transition-opacity hover:!opacity-100 hover:text-red-500"
-        onClick={() => deleteNode(id)}
-      >
-        &times;
-      </button>
     </div>
   );
 }

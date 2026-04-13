@@ -92,6 +92,50 @@ body {
   @apply bg-gray-100 text-gray-400;
 }
 
+/* ── Node floating toolbar ─────────────────────────────────────────── */
+.node-toolbar {
+  @apply absolute left-1/2 flex items-center gap-0.5 bg-white rounded-lg px-1.5 py-0.5 opacity-0 pointer-events-none transition-opacity;
+  transform: translate(-50%, 0);
+  top: -36px;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.05);
+  z-index: 10;
+}
+.react-flow__node.selected .node-toolbar {
+  @apply opacity-100 pointer-events-auto;
+}
+
+.node-toolbar__btn {
+  @apply flex items-center gap-1 px-1.5 py-1 bg-transparent border-none rounded-full text-[10px] font-medium text-gray-500 cursor-pointer transition-colors whitespace-nowrap;
+}
+.node-toolbar__btn:hover {
+  @apply bg-gray-100 text-gray-700;
+}
+.node-toolbar__btn--active {
+  @apply text-accent bg-accent-light;
+}
+.node-toolbar__btn--active:hover {
+  @apply bg-accent-light text-accent;
+}
+.node-toolbar__btn--danger:hover {
+  @apply bg-red-50 text-red-500;
+}
+
+.node-toolbar__btn[data-tooltip] {
+  position: relative;
+}
+.node-toolbar__btn[data-tooltip]::after {
+  content: attr(data-tooltip);
+  @apply absolute left-1/2 pointer-events-none text-[10px] font-normal normal-case tracking-normal text-white bg-gray-800 rounded-md px-2 py-1 opacity-0 transition-opacity whitespace-nowrap;
+  transform: translateX(-50%);
+  top: calc(100% + 6px);
+  max-width: 220px;
+  white-space: normal;
+  line-height: 1.3;
+  z-index: 20;
+}
+.node-toolbar__btn[data-tooltip]:hover::after {
+  @apply opacity-100;
+}
+
 /* Agent mode */
-[data-agent] .node-delete,
-[data-agent] .workflow-delete { opacity: 1 !important; }
+[data-agent] .node-toolbar { @apply opacity-100 pointer-events-auto; }
