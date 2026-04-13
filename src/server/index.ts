@@ -17,11 +17,11 @@ app.use("*", async (c, next) => {
   initDB(c.env.DB);
   initUploads(c.env.UPLOADS);
   if (!schemaApplied) {
-    await c.env.DB.batch([
-      c.env.DB.prepare("CREATE TABLE IF NOT EXISTS workflows (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL DEFAULT 'Untitled Workflow', nodes TEXT NOT NULL DEFAULT '[]', edges TEXT NOT NULL DEFAULT '[]', viewport TEXT NOT NULL DEFAULT '{\"x\":0,\"y\":0,\"zoom\":1}', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))"),
-      c.env.DB.prepare("CREATE TABLE IF NOT EXISTS generations (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL DEFAULT 0, node_id TEXT NOT NULL, prompt TEXT NOT NULL, model TEXT NOT NULL, image_url TEXT, status TEXT NOT NULL DEFAULT 'pending', error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))"),
-      c.env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_generations_workflow ON generations(workflow_id)"),
-    ]);
+    await c.env.DB.exec(
+      "CREATE TABLE IF NOT EXISTS workflows (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL DEFAULT 'Untitled Workflow', nodes TEXT NOT NULL DEFAULT '[]', edges TEXT NOT NULL DEFAULT '[]', viewport TEXT NOT NULL DEFAULT '{\"x\":0,\"y\":0,\"zoom\":1}', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')));\n" +
+      "CREATE TABLE IF NOT EXISTS generations (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL DEFAULT 0, node_id TEXT NOT NULL, prompt TEXT NOT NULL, model TEXT NOT NULL, image_url TEXT, status TEXT NOT NULL DEFAULT 'pending', error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));\n" +
+      "CREATE INDEX IF NOT EXISTS idx_generations_workflow ON generations(workflow_id);"
+    );
     schemaApplied = true;
   }
   await next();
