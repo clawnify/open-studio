@@ -6,5 +6,8 @@
     "framework": "preact+hono",
     "database": true,
     "storage": true
+  },
+  "env": {
+    "required": ["OPENROUTER_API_KEY"]
   }
 }
