@@ -9,5 +9,5 @@ database_name = "open-studio-db"
 database_id = "local"
 
 [[r2_buckets]]
-binding = "BUCKET"
+binding = "UPLOADS"
 bucket_name = "open-studio-uploads"

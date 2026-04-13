@@ -1,6 +1,6 @@
 let _bucket: R2Bucket;
 
-export function initBucket(bucket: R2Bucket) {
+export function initUploads(bucket: R2Bucket) {
   _bucket = bucket;
 }
 

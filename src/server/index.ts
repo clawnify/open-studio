@@ -1,14 +1,14 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { initDB, query, get, run } from "./db.js";
-import { initBucket, putUpload, getUpload, readUploadAsBase64DataUrl } from "./uploads.js";
+import { initUploads, putUpload, getUpload, readUploadAsBase64DataUrl } from "./uploads.js";
 
-type Env = { Bindings: { DB: D1Database; BUCKET: R2Bucket; OPENROUTER_API_KEY: string } };
+type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: string } };
 
 const app = new OpenAPIHono<Env>();
 
 app.use("*", async (c, next) => {
   initDB(c.env.DB);
-  initBucket(c.env.BUCKET);
+  initUploads(c.env.UPLOADS);
   await next();
 });
 
