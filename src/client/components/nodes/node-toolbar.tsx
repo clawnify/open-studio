@@ -10,10 +10,10 @@ export function NodeToolbar({ id, isInput, onToggleInput }: Props) {
   const { deleteNode } = useWorkflow();
 
   return (
-    <div class="node-toolbar">
+    <div className="node-toolbar">
       {onToggleInput && (
         <button
-          class={`node-toolbar__btn ${isInput ? "node-toolbar__btn--active" : ""}`}
+          className={`node-toolbar__btn ${isInput ? "node-toolbar__btn--active" : ""}`}
           onClick={() => onToggleInput(!isInput)}
           data-tooltip={isInput ? "This node's value can be overridden via API" : "Mark as API input — allows overriding this value when calling the workflow via API"}
         >
@@ -26,7 +26,7 @@ export function NodeToolbar({ id, isInput, onToggleInput }: Props) {
         </button>
       )}
       <button
-        class="node-toolbar__btn node-toolbar__btn--danger"
+        className="node-toolbar__btn node-toolbar__btn--danger"
         onClick={() => deleteNode(id)}
         data-tooltip="Delete node"
       >

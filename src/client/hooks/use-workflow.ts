@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "preact/hooks";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   useNodesState,
   useEdgesState,
@@ -26,8 +26,8 @@ interface HistoryEntry {
 export function useWorkflowState(): WorkflowContextValue {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
-  const [nodes, setNodes, onNodesChangeBase] = useNodesState([]);
-  const [edges, setEdges, onEdgesChangeBase] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChangeBase] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChangeBase] = useEdgesState<Edge>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [generations, setGenerations] = useState<Generation[]>([]);
   const [executing, setExecuting] = useState(false);

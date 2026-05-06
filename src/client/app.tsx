@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { WorkflowContext } from "./context";
 import { useWorkflowState } from "./hooks/use-workflow";
@@ -16,7 +16,7 @@ export function App() {
 
   if (state.loading) {
     return (
-      <div class="flex items-center justify-center h-full text-gray-400 text-base">
+      <div className="flex items-center justify-center h-full text-gray-400 text-base">
         Loading...
       </div>
     );
@@ -25,10 +25,10 @@ export function App() {
   return (
     <WorkflowContext.Provider value={state}>
       <ReactFlowProvider>
-        <div class="flex flex-col h-full w-full">
-          <nav class="flex bg-white border-b border-border-dim px-3 shrink-0">
+        <div className="flex flex-col h-full w-full">
+          <nav className="flex bg-white border-b border-border-dim px-3 shrink-0">
             <button
-              class={`px-5 py-2.5 bg-transparent border-none border-b-2 text-[13px] font-medium cursor-pointer transition-all ${
+              className={`px-5 py-2.5 bg-transparent border-none border-b-2 text-[13px] font-medium cursor-pointer transition-all ${
                 view === "generate"
                   ? "text-accent border-accent"
                   : "text-gray-500 border-transparent hover:text-gray-700"
@@ -38,7 +38,7 @@ export function App() {
               Generate
             </button>
             <button
-              class={`px-5 py-2.5 bg-transparent border-none border-b-2 text-[13px] font-medium cursor-pointer transition-all ${
+              className={`px-5 py-2.5 bg-transparent border-none border-b-2 text-[13px] font-medium cursor-pointer transition-all ${
                 view === "workflows"
                   ? "text-accent border-accent"
                   : "text-gray-500 border-transparent hover:text-gray-700"
@@ -52,9 +52,9 @@ export function App() {
           {view === "generate" ? (
             <QuickGenerate />
           ) : (
-            <div class="flex flex-1 min-h-0">
+            <div className="flex flex-1 min-h-0">
               <Sidebar />
-              <div class="flex-1 flex flex-col min-w-0">
+              <div className="flex-1 flex flex-col min-w-0">
                 <Toolbar />
                 <ErrorBanner />
                 <WorkflowCanvas />

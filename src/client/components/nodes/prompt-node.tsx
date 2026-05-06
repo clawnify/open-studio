@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "preact/hooks";
+import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { Node } from "@xyflow/react";
 import { useWorkflow } from "../../context";
@@ -203,29 +203,31 @@ export function PromptNode({ id, data }: Props) {
     }
   }, [data.text]);
 
-  // Re-render pills when labels change (nodeMap updated)
+  // Re-render pills only when referenced labels actually change
+  const referencedLabelsKey = useMemo(() => {
+    const text = data.text || "";
+    const ids = Array.from(text.matchAll(/\{\{(.+?)\}\}/g)).map((m) => m[1]);
+    return ids.map((rid) => `${rid}:${nodeMap.get(rid) ?? ""}`).join("|");
+  }, [data.text, nodeMap]);
+
   useEffect(() => {
     const el = editorRef.current;
     if (!el) return;
-    if (/\{\{.+?\}\}/.test(data.text || "")) {
-      el.innerHTML = textToHtml(data.text || "", nodeMap);
-    }
-  }, [nodeMap]);
+    if (!/\{\{.+?\}\}/.test(data.text || "")) return;
+    el.innerHTML = textToHtml(data.text || "", nodeMap);
+  }, [referencedLabelsKey]);
 
   const insertReference = useCallback((nodeId: string) => {
     const el = editorRef.current;
     if (!el) return;
 
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-
     const text = domToText(el);
-    const caretPos = saveCaretPos(el);
-    const slashIdx = text.lastIndexOf("/", caretPos - 1);
+    const search = "/" + menuFilter;
+    const slashIdx = text.lastIndexOf(search);
     if (slashIdx === -1) return;
 
     const before = text.slice(0, slashIdx);
-    const after = text.slice(caretPos);
+    const after = text.slice(slashIdx + search.length);
     const ref = `{{${nodeId}}}`;
     const newText = before + ref + after;
 
@@ -241,7 +243,7 @@ export function PromptNode({ id, data }: Props) {
       el.focus();
       restoreCaretPos(el, before.length + ref.length);
     });
-  }, [id, updateNodeData, nodeMap]);
+  }, [id, updateNodeData, nodeMap, menuFilter]);
 
   const onInput = useCallback(() => {
     const el = editorRef.current;
@@ -262,7 +264,7 @@ export function PromptNode({ id, data }: Props) {
     }
   }, [id, updateNodeData, showMenu, triggerAutoName]);
 
-  const onKeyDown = useCallback((e: KeyboardEvent) => {
+  const onKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     e.stopPropagation();
 
     if (!showMenu && e.key === "/" && promptNodes.length > 0) {
@@ -304,14 +306,14 @@ export function PromptNode({ id, data }: Props) {
   }, [showMenu, filtered, menuIndex, promptNodes.length, insertReference]);
 
   return (
-    <div class="flow-node relative">
+    <div className="flow-node relative">
       <NodeToolbar id={id} isInput={data.isInput} onToggleInput={(v) => updateNodeData(id, { isInput: v })} />
       <NodeHeader id={id} label={data.label} icon="&#9998;" bgClass="bg-violet-50" textClass="text-violet-600" />
-      <div class="p-2.5 flex flex-col gap-1.5 relative">
+      <div className="p-2.5 flex flex-col gap-1.5 relative">
         <div
           ref={editorRef}
           contentEditable
-          class="prompt-editor nodrag nowheel w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs p-1.5 outline-none transition-colors focus:border-accent"
+          className="prompt-editor nodrag nowheel w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs p-1.5 outline-none transition-colors focus:border-accent"
           style={{ minHeight: "64px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
           onInput={onInput}
           onKeyDown={onKeyDown}
@@ -319,21 +321,21 @@ export function PromptNode({ id, data }: Props) {
           data-placeholder={promptNodes.length > 0 ? "Type / to reference another prompt..." : "Enter your prompt..."}
         />
         {showMenu && filtered.length > 0 && (
-          <div class="absolute left-2.5 right-2.5 top-full mt-0.5 bg-white border border-border-dim rounded-lg shadow-lg z-50 overflow-hidden">
-            <div class="px-2 py-1 text-[10px] text-gray-400 uppercase tracking-wide border-b border-border-dim">Insert reference</div>
+          <div className="nodrag absolute left-2.5 right-2.5 top-full mt-0.5 bg-white border border-border-dim rounded-lg shadow-lg z-50 overflow-hidden">
+            <div className="px-2 py-1 text-[10px] text-gray-400 uppercase tracking-wide border-b border-border-dim">Insert reference</div>
             {filtered.map((n, i) => {
               const label = (n.data as Record<string, unknown>).label as string;
               const text = (n.data as Record<string, unknown>).text as string;
               return (
                 <button
                   key={n.id}
-                  class={`w-full text-left px-2 py-1.5 border-none cursor-pointer text-xs flex flex-col gap-0.5 ${
+                  className={`nodrag w-full text-left px-2 py-1.5 border-none cursor-pointer text-xs flex flex-col gap-0.5 ${
                     i === menuIndex ? "bg-accent-light text-accent" : "bg-transparent text-gray-700 hover:bg-surface-card"
                   }`}
                   onMouseDown={(e) => { e.preventDefault(); insertReference(n.id); }}
                 >
-                  <span class="font-semibold">{label}</span>
-                  {text && <span class="text-[10px] text-gray-400 truncate">{text.slice(0, 50)}{text.length > 50 ? "..." : ""}</span>}
+                  <span className="font-semibold">{label}</span>
+                  {text && <span className="text-[10px] text-gray-400 truncate">{text.slice(0, 50)}{text.length > 50 ? "..." : ""}</span>}
                 </button>
               );
             })}

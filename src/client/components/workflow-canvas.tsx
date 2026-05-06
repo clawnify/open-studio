@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "preact/hooks";
+import { useCallback, useMemo, type DragEvent } from "react";
 import {
   ReactFlow,
   Background,
@@ -51,17 +51,17 @@ export function WorkflowCanvas() {
 
   if (!activeWorkflow) {
     return (
-      <div class="flex-1 flex items-center justify-center">
-        <div class="text-center text-slate-400">
-          <h2 class="text-xl font-bold mb-2 text-slate-200">No workflow selected</h2>
-          <p class="text-[13px] text-slate-500">Create a workflow to get started building AI image generation pipelines.</p>
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center text-slate-400">
+          <h2 className="text-xl font-bold mb-2 text-slate-200">No workflow selected</h2>
+          <p className="text-[13px] text-slate-500">Create a workflow to get started building AI image generation pipelines.</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div class="flex-1 relative" onDragOver={onDragOver} onDrop={onDrop}>
+    <div className="flex-1 relative" onDragOver={onDragOver} onDrop={onDrop}>
       <ReactFlow
         nodes={nodes}
         edges={edges}

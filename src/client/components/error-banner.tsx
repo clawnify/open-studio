@@ -5,9 +5,9 @@ export function ErrorBanner() {
   if (!error) return null;
 
   return (
-    <div class="flex items-center justify-between px-4 py-2 bg-red-50 border-b border-red-200 text-red-600 text-xs shrink-0">
+    <div className="flex items-center justify-between px-4 py-2 bg-red-50 border-b border-red-200 text-red-600 text-xs shrink-0">
       <span>{error}</span>
-      <button onClick={clearError} class="bg-transparent border-none text-red-400 text-lg cursor-pointer px-1">&times;</button>
+      <button onClick={clearError} className="bg-transparent border-none text-red-400 text-lg cursor-pointer px-1">&times;</button>
     </div>
   );
 }

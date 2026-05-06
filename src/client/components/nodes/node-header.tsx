@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "preact/hooks";
+import { useState, useRef, useEffect } from "react";
 import { useWorkflow } from "../../context";
 
 interface Props {
@@ -30,14 +30,14 @@ export function NodeHeader({ id, label, icon, bgClass, textClass }: Props) {
   };
 
   return (
-    <div class={`flex items-center gap-1.5 px-2.5 py-2 font-semibold text-[11px] uppercase tracking-wide border-b border-border-dim ${bgClass} ${textClass}`}>
-      <span class="text-sm">{icon}</span>
+    <div className={`flex items-center gap-1.5 px-2.5 py-2 font-semibold text-[11px] uppercase tracking-wide border-b border-border-dim ${bgClass} ${textClass}`}>
+      <span className="text-sm">{icon}</span>
       {editing ? (
         <input
           ref={inputRef}
-          class="nodrag flex-1 bg-white border border-accent rounded text-gray-900 text-[11px] font-semibold px-1 py-0 outline-none uppercase"
+          className="nodrag flex-1 bg-white border border-accent rounded text-gray-900 text-[11px] font-semibold px-1 py-0 outline-none uppercase"
           value={editValue}
-          onInput={(e) => setEditValue((e.target as HTMLInputElement).value)}
+          onChange={(e) => setEditValue(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => {
             e.stopPropagation();
@@ -47,8 +47,8 @@ export function NodeHeader({ id, label, icon, bgClass, textClass }: Props) {
         />
       ) : (
         <span
-          class="flex-1 cursor-text truncate"
-          onDblClick={() => { setEditValue(label); setEditing(true); }}
+          className="flex-1 cursor-text truncate"
+          onDoubleClick={() => { setEditValue(label); setEditing(true); }}
         >
           {label}
         </span>
