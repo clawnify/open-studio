@@ -3,7 +3,7 @@
   "name": "Open Studio",
   "description": "AI image generation studio with a node-based workflow editor and quick-generate gallery. Supports 10+ models via OpenRouter including Gemini, GPT Image, FLUX, and SeedDream.",
   "app": {
-    "framework": "preact+hono",
+    "framework": "react+hono",
     "database": true,
     "storage": true
   },
