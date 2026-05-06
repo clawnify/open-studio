@@ -336,6 +336,7 @@ app.openapi(listModels, async (c) => {
     { id: "openai/gpt-image-1", name: "GPT Image 1" },
     { id: "openai/gpt-5-image-mini", name: "GPT-5 Image Mini" },
     { id: "openai/gpt-5-image", name: "GPT-5 Image" },
+    { id: "openai/gpt-5.4-image-2", name: "GPT-5.4 Image 2" },
     { id: "google/gemini-2.5-flash-image", name: "Gemini 2.5 Flash Image" },
     { id: "bytedance-seed/seedream-4.5", name: "SeedDream 4.5" },
     { id: "black-forest-labs/flux.2-max", name: "FLUX.2 Max" },

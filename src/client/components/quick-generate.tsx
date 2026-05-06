@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo, type DragEvent, type KeyboardEvent } from "react";
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, type DragEvent, type KeyboardEvent } from "react";
 import { useWorkflow } from "../context";
 import { api } from "../api";
 import type { Generation } from "../types";
@@ -117,6 +117,14 @@ export function QuickGenerate() {
   const [imageDims, setImageDims] = useState<Record<number, number>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [prompt]);
 
   // Measure container
   useEffect(() => {
@@ -319,7 +327,8 @@ export function QuickGenerate() {
             </div>
           )}
           <textarea
-            className="w-full bg-transparent text-gray-900 text-sm leading-relaxed resize-none outline-none min-h-[24px] max-h-[120px] placeholder:text-gray-400 border-none p-0"
+            ref={textareaRef}
+            className="w-full bg-transparent text-gray-900 text-sm leading-relaxed resize-none outline-none min-h-[24px] max-h-[240px] overflow-y-auto placeholder:text-gray-400 border-none p-0"
             placeholder="Describe the scene you imagine"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
