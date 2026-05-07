@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent } from "react";
-import { Handle, Position } from "@xyflow/react";
+import { Handle, Position, NodeResizer } from "@xyflow/react";
 import type { Node } from "@xyflow/react";
 import { useWorkflow } from "../../context";
 import { api } from "../../api";
@@ -7,7 +7,7 @@ import { NodeHeader } from "./node-header";
 import { NodeToolbar } from "./node-toolbar";
 import type { PromptNodeData } from "../../types";
 
-interface Props { id: string; data: PromptNodeData; }
+interface Props { id: string; data: PromptNodeData; selected?: boolean; }
 
 const ZWS = "\u200B";
 
@@ -72,6 +72,61 @@ function saveCaretPos(el: HTMLElement): number {
   return range.toString().length;
 }
 
+/** Offset of the caret in the same coordinate system as domToText(). */
+function caretDomTextOffset(el: HTMLElement): number {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return 0;
+  const range = sel.getRangeAt(0);
+  const target = range.startContainer;
+  const targetOffset = range.startOffset;
+
+  let count = 0;
+  let done = false;
+
+  function visit(node: globalThis.Node, isRoot = false) {
+    if (done) return;
+    if (node === target) {
+      if (node.nodeType === globalThis.Node.TEXT_NODE) {
+        count += (node.textContent || "").slice(0, targetOffset).replace(/​/g, "").length;
+      } else {
+        const kids = Array.from(node.childNodes);
+        for (let i = 0; i < targetOffset && i < kids.length; i++) {
+          visit(kids[i]);
+          if (done) return;
+        }
+      }
+      done = true;
+      return;
+    }
+    if (node.nodeType === globalThis.Node.TEXT_NODE) {
+      count += (node.textContent || "").replace(/​/g, "").length;
+      return;
+    }
+    if (node instanceof HTMLElement) {
+      if (node.classList.contains("prompt-pill")) {
+        const nodeId = node.getAttribute("data-node-id") || "";
+        count += `{{${nodeId}}}`.length;
+        return;
+      }
+      if (node.tagName === "BR") {
+        count += 1;
+        return;
+      }
+      if (node.tagName === "DIV" && !isRoot) {
+        // domToText prepends \n for nested DIVs when prior content lacks one
+        if (count > 0) count += 1;
+      }
+      for (const child of node.childNodes) {
+        visit(child);
+        if (done) return;
+      }
+    }
+  }
+
+  visit(el, true);
+  return count;
+}
+
 function restoreCaretPos(el: HTMLElement, offset: number) {
   const sel = window.getSelection();
   if (!sel) return;
@@ -115,7 +170,7 @@ function restoreCaretPos(el: HTMLElement, offset: number) {
   sel.addRange(range);
 }
 
-export function PromptNode({ id, data }: Props) {
+export function PromptNode({ id, data, selected }: Props) {
   const { updateNodeData, deleteNode, nodes } = useWorkflow();
   const [showMenu, setShowMenu] = useState(false);
   const [menuFilter, setMenuFilter] = useState("");
@@ -222,12 +277,13 @@ export function PromptNode({ id, data }: Props) {
     if (!el) return;
 
     const text = domToText(el);
-    const search = "/" + menuFilter;
-    const slashIdx = text.lastIndexOf(search);
-    if (slashIdx === -1) return;
+    const slashPos = slashPosRef.current;
+    if (slashPos === null) return;
+    const slashIdx = slashPos - 1;
+    if (slashIdx < 0 || text[slashIdx] !== "/") return;
 
     const before = text.slice(0, slashIdx);
-    const after = text.slice(slashIdx + search.length);
+    const after = text.slice(slashPos + menuFilter.length);
     const ref = `{{${nodeId}}}`;
     const newText = before + ref + after;
 
@@ -253,8 +309,8 @@ export function PromptNode({ id, data }: Props) {
     updateNodeData(id, { text });
 
     if (showMenu && slashPosRef.current !== null) {
-      const caretPos = saveCaretPos(el);
-      const typed = text.slice(slashPosRef.current, caretPos);
+      const caretPos = caretDomTextOffset(el);
+      const typed = text.slice(slashPosRef.current, Math.max(caretPos, slashPosRef.current));
       if (typed.length > 30 || (typed.includes(" ") && typed.length > 15)) {
         setShowMenu(false);
         slashPosRef.current = null;
@@ -270,7 +326,7 @@ export function PromptNode({ id, data }: Props) {
     if (!showMenu && e.key === "/" && promptNodes.length > 0) {
       const el = editorRef.current;
       if (!el) return;
-      slashPosRef.current = saveCaretPos(el) + 1;
+      slashPosRef.current = caretDomTextOffset(el) + 1;
       setShowMenu(true);
       setMenuFilter("");
       return;
@@ -295,7 +351,7 @@ export function PromptNode({ id, data }: Props) {
       } else if (e.key === "Backspace") {
         const el = editorRef.current;
         if (el && slashPosRef.current !== null) {
-          const caretPos = saveCaretPos(el);
+          const caretPos = caretDomTextOffset(el);
           if (caretPos <= slashPosRef.current - 1) {
             setShowMenu(false);
             slashPosRef.current = null;
@@ -306,7 +362,16 @@ export function PromptNode({ id, data }: Props) {
   }, [showMenu, filtered, menuIndex, promptNodes.length, insertReference]);
 
   return (
-    <div className="flow-node relative">
+    <div className="flow-node relative flex flex-col" style={{ width: "100%", height: "100%", maxWidth: "none" }}>
+      <NodeResizer
+        isVisible={selected}
+        minWidth={220}
+        minHeight={120}
+        maxWidth={600}
+        maxHeight={600}
+        lineClassName="!border-accent"
+        handleClassName="!bg-accent !border-white"
+      />
       <NodeToolbar id={id} isInput={data.isInput} onToggleInput={(v) => updateNodeData(id, { isInput: v })} />
       <NodeHeader id={id} label={data.label} icon="&#9998;" bgClass="bg-violet-50" textClass="text-violet-600" />
       <div className="p-2.5 flex flex-col gap-1.5 relative">
@@ -314,7 +379,7 @@ export function PromptNode({ id, data }: Props) {
           ref={editorRef}
           contentEditable
           className="prompt-editor nodrag nowheel w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs p-1.5 outline-none transition-colors focus:border-accent"
-          style={{ minHeight: "64px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+          style={{ minHeight: "64px", maxHeight: "240px", overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
           onInput={onInput}
           onKeyDown={onKeyDown}
           onBlur={() => { setTimeout(() => setShowMenu(false), 200); flushAutoName(); }}

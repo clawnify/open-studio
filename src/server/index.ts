@@ -5,6 +5,10 @@ import { initUploads, putUpload, getUpload, readUploadAsBase64DataUrl } from "./
 type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: string } };
 
 const app = new OpenAPIHono<Env>();
+// Public sub-app — every route here MUST be registered with publicApp.openapi(...)
+// so it shows up in /api/v1/openapi.json. Internal routes stay on `app` and are
+// excluded from the public spec by virtue of living in a different app instance.
+const publicApp = new OpenAPIHono<Env>();
 
 app.onError((err, c) => {
   console.error(err);
@@ -452,9 +456,44 @@ app.post("/api/suggest-name", async (c) => {
   }
 });
 
-// ── Public workflow list (with input schema) ─────────────────────────
+// ── Public API (v1) ──────────────────────────────────────────────────
 
-app.get("/api/v1/workflows", async (c) => {
+const PublicInputSchema = z.object({
+  node_id: z.string(),
+  type: z.enum(["text", "image_url"]),
+  label: z.string(),
+});
+
+const PublicWorkflowSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  inputs: z.array(PublicInputSchema),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+const ExecuteResultSchema = z.object({
+  workflow_id: z.number(),
+  outputs: z.array(z.record(z.unknown())),
+  all_nodes: z.array(z.object({
+    node_id: z.string(),
+    type: z.string(),
+    label: z.string(),
+    output: z.record(z.unknown()),
+  })),
+});
+
+const listPublicWorkflows = createRoute({
+  method: "get",
+  path: "/api/v1/workflows",
+  tags: ["workflows"],
+  summary: "List workflows with their input schema",
+  responses: {
+    200: { content: { "application/json": { schema: z.array(PublicWorkflowSchema) } }, description: "OK" },
+  },
+});
+
+publicApp.openapi(listPublicWorkflows, async (c) => {
   const rows = await query<{ id: number; name: string; nodes: string; created_at: string; updated_at: string }>(
     "SELECT id, name, nodes, created_at, updated_at FROM workflows ORDER BY updated_at DESC",
   );
@@ -474,10 +513,34 @@ app.get("/api/v1/workflows", async (c) => {
   return c.json(workflows, 200);
 });
 
-// ── Execute workflow ──────────────────────────────────────────────────
+const executeWorkflow = createRoute({
+  method: "post",
+  path: "/api/v1/workflows/{id}/execute",
+  tags: ["workflows"],
+  summary: "Run a workflow with the given input overrides",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            inputs: z.record(z.string()).optional().openapi({
+              description: "Map of input node_id → value (text or image URL).",
+            }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: { content: { "application/json": { schema: ExecuteResultSchema } }, description: "OK" },
+    404: { content: { "application/json": { schema: ErrorSchema } }, description: "Workflow not found" },
+    500: { content: { "application/json": { schema: ErrorSchema } }, description: "Server error" },
+  },
+});
 
-app.post("/api/v1/workflows/:id/execute", async (c) => {
-  const { id } = c.req.param();
+publicApp.openapi(executeWorkflow, async (c) => {
+  const { id } = c.req.valid("param");
   const apiKey = c.env.OPENROUTER_API_KEY;
   if (!apiKey) return c.json({ error: "OPENROUTER_API_KEY not set" }, 500);
 
@@ -486,7 +549,7 @@ app.post("/api/v1/workflows/:id/execute", async (c) => {
   );
   if (!wf) return c.json({ error: "Workflow not found" }, 404);
 
-  const body = await c.req.json<{ inputs?: Record<string, string> }>().catch(() => ({ inputs: {} }));
+  const body = c.req.valid("json");
   const inputOverrides = body.inputs || {};
 
   const nodes = JSON.parse(wf.nodes) as Array<{ id: string; type: string; data: Record<string, unknown> }>;
@@ -666,8 +729,22 @@ app.post("/api/v1/workflows/:id/execute", async (c) => {
   }, 200);
 });
 
-// ── OpenAPI doc ──────────────────────────────────────────────────────
+// ── OpenAPI doc + mount public sub-app ───────────────────────────────
 
-app.doc("/openapi.json", { openapi: "3.0.0", info: { title: "Flow Studio API", version: "3.0.0" } });
+const publicSpec = {
+  openapi: "3.0.0" as const,
+  info: { title: "Flow Studio API", version: "1.0.0" },
+};
+
+publicApp.doc("/openapi.json", publicSpec);
+
+// Mirror the public spec at root /openapi.json so dashboards using the
+// conventional path find it. Internal routes are still excluded because the
+// document is generated from publicApp, not app.
+app.get("/openapi.json", (c) => c.json(publicApp.getOpenAPIDocument(publicSpec)));
+
+// Mount at root: publicApp's routes already carry their full /api/v1/... path,
+// so paths in the spec match real URLs (no `servers` indirection needed).
+app.route("/", publicApp);
 
 export default app;
