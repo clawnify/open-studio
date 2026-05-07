@@ -350,6 +350,90 @@ app.openapi(listModels, async (c) => {
   return c.json(models, 200);
 });
 
+// ── Analyze (vision → text/JSON) ─────────────────────────────────────
+
+const ANALYZE_MODELS = [
+  { id: "~google/gemini-flash-latest", name: "Gemini Flash (latest)" },
+  { id: "~google/gemini-pro-latest", name: "Gemini Pro (latest)" },
+  { id: "~openai/gpt-mini-latest", name: "GPT Mini (latest)" },
+  { id: "~openai/gpt-latest", name: "GPT (latest)" },
+] as const;
+
+app.get("/api/analyze-models", (c) => c.json(ANALYZE_MODELS, 200));
+
+async function runAnalyze(
+  apiKey: string,
+  prompt: string,
+  model: string,
+  inputImages: string[],
+  outputFormat: "json" | "text",
+): Promise<{ result: string }> {
+  const msgContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  for (const imgUrl of inputImages) {
+    let url = imgUrl;
+    if (imgUrl.startsWith("/api/uploads/")) {
+      const dataUrl = await readUploadAsBase64DataUrl(imgUrl.replace("/api/uploads/", ""));
+      if (dataUrl) url = dataUrl;
+    }
+    msgContent.push({ type: "image_url", image_url: { url } });
+  }
+  const fullPrompt = outputFormat === "json"
+    ? `${prompt}\n\nRespond with a single valid JSON object only — no prose, no markdown fences.`
+    : prompt;
+  msgContent.push({ type: "text", text: fullPrompt });
+
+  const body: Record<string, unknown> = {
+    model,
+    messages: [{ role: "user", content: msgContent }],
+  };
+  if (outputFormat === "json") body.response_format = { type: "json_object" };
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://openclaw.app",
+      "X-Title": "Flow Studio",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`OpenRouter error: ${err}`);
+  }
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  let text = data.choices?.[0]?.message?.content?.trim() || "";
+  if (outputFormat === "json") {
+    // Strip code fences if the model added them despite our instruction.
+    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  }
+  return { result: text };
+}
+
+app.post("/api/analyze", async (c) => {
+  const apiKey = c.env.OPENROUTER_API_KEY;
+  if (!apiKey) return c.json({ error: "OPENROUTER_API_KEY not set" }, 500);
+
+  const { prompt, model, input_images, output_format } = await c.req.json<{
+    prompt: string;
+    model: string;
+    input_images?: string[];
+    output_format?: "json" | "text";
+  }>();
+  if (!prompt) return c.json({ error: "prompt is required" }, 400);
+  if (!input_images || input_images.length === 0) {
+    return c.json({ error: "at least one input image is required" }, 400);
+  }
+
+  try {
+    const out = await runAnalyze(apiKey, prompt, model, input_images, output_format || "text");
+    return c.json(out, 200);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Generations history ──────────────────────────────────────────────
 
 const GenerationSchema = z.object({
@@ -571,7 +655,21 @@ publicApp.openapi(executeWorkflow, async (c) => {
   const inDegree = new Map<string, number>();
   const adjList = new Map<string, string[]>();
   nodes.forEach((n) => { inDegree.set(n.id, 0); adjList.set(n.id, []); });
-  edges.forEach((e) => {
+
+  // Real edges + virtual edges from {{nodeId}} pill references inside prompt text.
+  const allDeps: Array<{ source: string; target: string }> = edges.map((e) => ({ source: e.source, target: e.target }));
+  for (const n of nodes) {
+    if (n.type !== "prompt") continue;
+    const text = (n.data.text as string) || "";
+    const matches = text.match(/\{\{(.+?)\}\}/g) || [];
+    for (const m of matches) {
+      const refId = m.slice(2, -2).trim();
+      if (refId === n.id || !nodeMap.has(refId)) continue;
+      if (allDeps.some((d) => d.source === refId && d.target === n.id)) continue;
+      allDeps.push({ source: refId, target: n.id });
+    }
+  }
+  allDeps.forEach((e) => {
     inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
     adjList.get(e.source)?.push(e.target);
   });
@@ -612,7 +710,8 @@ publicApp.openapi(executeWorkflow, async (c) => {
         let text = (node.data.text as string) || "";
         text = text.replace(/\{\{(.+?)\}\}/g, (_match, refId: string) => {
           const ref = nodeMap.get(refId.trim());
-          return ref ? ((ref.data.text as string) || "") : _match;
+          if (!ref) return _match;
+          return (ref.data.text as string) || (ref.data.result as string) || "";
         });
         outputs.set(nodeId, { text });
         results.push({ node_id: nodeId, type: "prompt", label: (node.data.label as string) || nodeId, output: { text } });
@@ -708,6 +807,23 @@ publicApp.openapi(executeWorkflow, async (c) => {
             "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
             [wf.id, nodeId, prompt, model, null, "error", String(err)],
           );
+        }
+        break;
+      }
+      case "analyze": {
+        const analyzePrompt = (node.data.prompt as string) || inputText || "Describe this image.";
+        const analyzeModel = (node.data.model as string) || "~google/gemini-flash-latest";
+        const outputFormat = ((node.data.outputFormat as string) === "json" ? "json" : "text") as "json" | "text";
+        if (inputImages.length === 0) {
+          results.push({ node_id: nodeId, type: "analyze", label: (node.data.label as string) || nodeId, output: { error: "No input image" } });
+          break;
+        }
+        try {
+          const out = await runAnalyze(apiKey, analyzePrompt, analyzeModel, inputImages, outputFormat);
+          outputs.set(nodeId, { text: out.result });
+          results.push({ node_id: nodeId, type: "analyze", label: (node.data.label as string) || nodeId, output: { text: out.result, format: outputFormat } });
+        } catch (err) {
+          results.push({ node_id: nodeId, type: "analyze", label: (node.data.label as string) || nodeId, output: { error: String(err) } });
         }
         break;
       }

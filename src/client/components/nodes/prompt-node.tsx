@@ -6,16 +6,18 @@ import { api } from "../../api";
 import { NodeHeader } from "./node-header";
 import { NodeToolbar } from "./node-toolbar";
 import type { PromptNodeData } from "../../types";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 interface Props { id: string; data: PromptNodeData; selected?: boolean; }
 
 const ZWS = "\u200B";
 
-/** Build a lookup from node ID → label for all prompt nodes */
+/** Build a lookup from node ID → label for nodes that can be referenced via {{...}}. */
 function buildNodeMap(nodes: Node[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const n of nodes) {
-    if (n.type === "prompt") {
+    if (n.type === "prompt" || n.type === "analyze") {
       map.set(n.id, (n.data as Record<string, unknown>).label as string);
     }
   }
@@ -175,6 +177,8 @@ export function PromptNode({ id, data, selected }: Props) {
   const [showMenu, setShowMenu] = useState(false);
   const [menuFilter, setMenuFilter] = useState("");
   const [menuIndex, setMenuIndex] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [draftText, setDraftText] = useState("");
   const editorRef = useRef<HTMLDivElement>(null);
   const slashPosRef = useRef<number | null>(null);
   const suppressSyncRef = useRef(false);
@@ -184,7 +188,7 @@ export function PromptNode({ id, data, selected }: Props) {
   const nodeMap = useMemo(() => buildNodeMap(nodes), [nodes]);
   const nodeMapRef = useRef(nodeMap);
   nodeMapRef.current = nodeMap;
-  const promptNodes = nodes.filter((n) => n.type === "prompt" && n.id !== id);
+  const promptNodes = nodes.filter((n) => (n.type === "prompt" || n.type === "analyze") && n.id !== id);
 
   // Refs for auto-name so the debounced callback always reads fresh values
   const dataRef = useRef(data);
@@ -362,7 +366,7 @@ export function PromptNode({ id, data, selected }: Props) {
   }, [showMenu, filtered, menuIndex, promptNodes.length, insertReference]);
 
   return (
-    <div className="flow-node relative flex flex-col" style={{ width: "100%", height: "100%", maxWidth: "none" }}>
+    <div className="group flow-node relative flex flex-col" style={{ width: "100%", height: "100%", maxWidth: "none" }}>
       <NodeResizer
         isVisible={selected}
         minWidth={220}
@@ -375,22 +379,33 @@ export function PromptNode({ id, data, selected }: Props) {
       <NodeToolbar id={id} isInput={data.isInput} onToggleInput={(v) => updateNodeData(id, { isInput: v })} />
       <NodeHeader id={id} label={data.label} icon="&#9998;" bgClass="bg-violet-50" textClass="text-violet-600" />
       <div className="p-2.5 flex flex-col gap-1.5 relative">
-        <div
-          ref={editorRef}
-          contentEditable
-          className="prompt-editor nodrag nowheel w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs p-1.5 outline-none transition-colors focus:border-accent"
-          style={{ minHeight: "64px", maxHeight: "240px", overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-          onInput={onInput}
-          onKeyDown={onKeyDown}
-          onBlur={() => { setTimeout(() => setShowMenu(false), 200); flushAutoName(); }}
-          data-placeholder={promptNodes.length > 0 ? "Type / to reference another prompt..." : "Enter your prompt..."}
-        />
+        <div className="relative">
+          <div
+            ref={editorRef}
+            contentEditable
+            className="prompt-editor nodrag nowheel w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs p-1.5 outline-none transition-colors focus:border-accent"
+            style={{ minHeight: "64px", maxHeight: "240px", overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+            onInput={onInput}
+            onKeyDown={onKeyDown}
+            onBlur={() => { setTimeout(() => setShowMenu(false), 200); flushAutoName(); }}
+            data-placeholder={promptNodes.length > 0 ? "Type / to reference another node..." : "Enter your prompt..."}
+          />
+          <button
+            className="nodrag absolute bottom-1.5 right-1.5 text-[10px] text-gray-400 hover:text-accent bg-white/90 border border-border-dim rounded px-1.5 py-0.5 cursor-pointer transition-opacity opacity-0 group-hover:opacity-100"
+            onClick={() => { setDraftText(data.text || ""); setExpanded(true); }}
+            title="Expand editor"
+          >
+            ⤢ Expand
+          </button>
+        </div>
         {showMenu && filtered.length > 0 && (
           <div className="nodrag absolute left-2.5 right-2.5 top-full mt-0.5 bg-white border border-border-dim rounded-lg shadow-lg z-50 overflow-hidden">
             <div className="px-2 py-1 text-[10px] text-gray-400 uppercase tracking-wide border-b border-border-dim">Insert reference</div>
             {filtered.map((n, i) => {
               const label = (n.data as Record<string, unknown>).label as string;
-              const text = (n.data as Record<string, unknown>).text as string;
+              const nd = n.data as Record<string, unknown>;
+              const preview = ((nd.text as string) || (nd.prompt as string) || (nd.result as string) || "").trim();
+              const typeBadge = n.type === "analyze" ? "Analyze" : "Prompt";
               return (
                 <button
                   key={n.id}
@@ -399,8 +414,11 @@ export function PromptNode({ id, data, selected }: Props) {
                   }`}
                   onMouseDown={(e) => { e.preventDefault(); insertReference(n.id); }}
                 >
-                  <span className="font-semibold">{label}</span>
-                  {text && <span className="text-[10px] text-gray-400 truncate">{text.slice(0, 50)}{text.length > 50 ? "..." : ""}</span>}
+                  <span className="font-semibold flex items-center gap-1.5">
+                    {label}
+                    <span className="text-[9px] uppercase tracking-wide text-gray-400 font-medium">{typeBadge}</span>
+                  </span>
+                  {preview && <span className="text-[10px] text-gray-400 truncate">{preview.slice(0, 50)}{preview.length > 50 ? "..." : ""}</span>}
                 </button>
               );
             })}
@@ -409,6 +427,34 @@ export function PromptNode({ id, data, selected }: Props) {
       </div>
       <Handle type="target" position={Position.Left} className="!bg-violet-500" />
       <Handle type="source" position={Position.Right} className="!bg-accent" />
+
+      <Dialog open={expanded} onOpenChange={setExpanded}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{data.label || "Prompt"}</DialogTitle>
+            <DialogDescription>
+              Reference other nodes with <code className="text-[11px]">{"{{node_id}}"}</code>. Use the inline editor to insert references via <code className="text-[11px]">/</code>.
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            className="w-full min-h-[280px] max-h-[60vh] resize-y bg-surface-card border border-border-dim rounded text-gray-800 text-sm p-3 outline-none focus:border-accent leading-relaxed"
+            value={draftText}
+            autoFocus
+            onChange={(e) => setDraftText(e.target.value)}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExpanded(false)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                updateNodeData(id, { text: draftText });
+                setExpanded(false);
+              }}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

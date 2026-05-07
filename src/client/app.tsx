@@ -3,6 +3,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { WorkflowContext } from "./context";
 import { useWorkflowState } from "./hooks/use-workflow";
 import { WorkflowCanvas } from "./components/workflow-canvas";
+import { WorkflowOutputs } from "./components/workflow-outputs";
 import { Sidebar } from "./components/sidebar";
 import { Toolbar } from "./components/toolbar";
 import { ErrorBanner } from "./components/error-banner";
@@ -13,6 +14,7 @@ type View = "generate" | "workflows";
 export function App() {
   const state = useWorkflowState();
   const [view, setView] = useState<View>("generate");
+  const [workflowView, setWorkflowView] = useState<"canvas" | "outputs">("canvas");
 
   if (state.loading) {
     return (
@@ -55,9 +57,9 @@ export function App() {
             <div className="flex flex-1 min-h-0">
               <Sidebar />
               <div className="flex-1 flex flex-col min-w-0">
-                <Toolbar />
+                <Toolbar workflowView={workflowView} onWorkflowViewChange={setWorkflowView} />
                 <ErrorBanner />
-                <WorkflowCanvas />
+                {workflowView === "canvas" ? <WorkflowCanvas /> : <WorkflowOutputs />}
               </div>
             </div>
           )}

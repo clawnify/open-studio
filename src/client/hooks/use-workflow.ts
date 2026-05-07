@@ -23,6 +23,21 @@ interface HistoryEntry {
   edges: Edge[];
 }
 
+/** Drop runtime/output fields so saved workflow contains only user-authored config. */
+const RUNTIME_FIELDS_BY_TYPE: Record<string, readonly string[]> = {
+  generateImage: ["status", "imageUrl", "error"],
+  analyze: ["status", "result", "error"],
+  output: ["imageUrl", "text"],
+};
+
+function stripRuntimeOutputs(node: Node): Node {
+  const fields = RUNTIME_FIELDS_BY_TYPE[node.type || ""];
+  if (!fields) return node;
+  const data = { ...(node.data as Record<string, unknown>) };
+  for (const f of fields) delete data[f];
+  return { ...node, data } as Node;
+}
+
 export function useWorkflowState(): WorkflowContextValue {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [activeWorkflow, setActiveWorkflow] = useState<Workflow | null>(null);
@@ -211,6 +226,9 @@ export function useWorkflowState(): WorkflowContextValue {
         case "imageInput":
           data = { label: "Image Input", imageUrl: "" };
           break;
+        case "analyze":
+          data = { label: "Analyze", prompt: "Describe what you see.", model: "~google/gemini-flash-latest", outputFormat: "text", status: "idle" };
+          break;
         case "output":
           data = { label: "Output", imageUrl: "", text: "" };
           break;
@@ -253,7 +271,7 @@ export function useWorkflowState(): WorkflowContextValue {
     if (!activeIdRef.current) return;
     try {
       const wf = await api<Workflow>("PUT", `/api/workflows/${activeIdRef.current}`, {
-        nodes: JSON.stringify(nodes),
+        nodes: JSON.stringify(nodes.map(stripRuntimeOutputs)),
         edges: JSON.stringify(edges),
       });
       setWorkflows((prev) => prev.map((w) => (w.id === wf.id ? wf : w)));
@@ -281,7 +299,21 @@ export function useWorkflowState(): WorkflowContextValue {
         adjList.set(n.id, []);
       });
 
-      edges.forEach((e) => {
+      // Real edges + virtual edges from {{nodeId}} pill references inside prompt text.
+      // Without these, a prompt that references an analyze node only via {{...}} (no
+      // drawn edge) can run before the analyze node and resolve to "".
+      const allDeps: Array<{ source: string; target: string }> = edges.map((e) => ({ source: e.source, target: e.target }));
+      for (const n of nodes) {
+        if (n.type !== "prompt") continue;
+        const text = ((n.data as Record<string, unknown>).text as string) || "";
+        for (const m of text.matchAll(/\{\{(.+?)\}\}/g)) {
+          const refId = m[1].trim();
+          if (refId === n.id || !nodeMap.has(refId)) continue;
+          if (allDeps.some((d) => d.source === refId && d.target === n.id)) continue;
+          allDeps.push({ source: refId, target: n.id });
+        }
+      }
+      allDeps.forEach((e) => {
         inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
         adjList.get(e.source)?.push(e.target);
       });
@@ -324,12 +356,12 @@ export function useWorkflowState(): WorkflowContextValue {
         switch (node.type) {
           case "prompt": {
             let text = (data.text as string) || "";
-            // Resolve {{nodeId}} references to other prompt nodes' text
+            // Resolve {{nodeId}} references — fall back to `result` (analyze nodes)
             text = text.replace(/\{\{(.+?)\}\}/g, (_match, refId: string) => {
               const ref = nodeMap.get(refId.trim());
               if (!ref) return _match;
               const refData = ref.data as Record<string, unknown>;
-              return (refData.text as string) || "";
+              return (refData.text as string) || (refData.result as string) || "";
             });
             outputs.set(nodeId, { text });
             break;
@@ -382,6 +414,31 @@ export function useWorkflowState(): WorkflowContextValue {
                 status: "error",
                 error: errMsg,
               });
+            }
+            break;
+          }
+          case "analyze": {
+            const analyzePrompt = (data.prompt as string) || inputText || "Describe this image.";
+            const analyzeModel = (data.model as string) || "google/gemini-2.5-flash";
+            const outputFormat = ((data.outputFormat as string) === "json" ? "json" : "text") as "json" | "text";
+            if (inputImages.length === 0) {
+              updateNodeData(nodeId, { status: "error", error: "No input image" });
+              outputs.set(nodeId, { text: "" });
+              break;
+            }
+            updateNodeData(nodeId, { status: "running", error: undefined });
+            try {
+              const out = await api<{ result: string }>(
+                "POST",
+                "/api/analyze",
+                { prompt: analyzePrompt, model: analyzeModel, input_images: inputImages, output_format: outputFormat },
+              );
+              updateNodeData(nodeId, { status: "success", result: out.result });
+              outputs.set(nodeId, { text: out.result });
+            } catch (e) {
+              const errMsg = String(e);
+              updateNodeData(nodeId, { status: "error", error: errMsg });
+              outputs.set(nodeId, { text: "" });
             }
             break;
           }

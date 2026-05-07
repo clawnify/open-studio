@@ -53,4 +53,19 @@ export interface OutputNodeData {
   text?: string;
 }
 
-export type FlowNodeData = PromptNodeData | GenerateNodeData | ImageInputNodeData | OutputNodeData;
+export interface AnalyzeNodeData {
+  label: string;
+  prompt: string;
+  model: string;
+  outputFormat: "json" | "text";
+  status: "idle" | "running" | "success" | "error";
+  result?: string;
+  error?: string;
+}
+
+export type FlowNodeData =
+  | PromptNodeData
+  | GenerateNodeData
+  | ImageInputNodeData
+  | OutputNodeData
+  | AnalyzeNodeData;
