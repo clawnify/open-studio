@@ -792,7 +792,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
             break; // take first image
           }
 
-          outputs.set(nodeId, { imageUrl, text: prompt });
+          outputs.set(nodeId, { imageUrl, text: message?.content || undefined });
           results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { imageUrl, text: message?.content || undefined } });
 
           // Save generation
@@ -801,7 +801,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
             [wf.id, nodeId, prompt, model, imageUrl || null, "success", null],
           );
         } catch (err) {
-          outputs.set(nodeId, { text: prompt });
+          outputs.set(nodeId, {});
           results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: String(err) } });
           await run(
             "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",

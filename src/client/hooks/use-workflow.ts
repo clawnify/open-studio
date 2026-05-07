@@ -389,7 +389,7 @@ export function useWorkflowState(): WorkflowContextValue {
               const imageUrl = img?.url || "";
 
               updateNodeData(nodeId, { status: "success", imageUrl });
-              outputs.set(nodeId, { imageUrl, text: prompt });
+              outputs.set(nodeId, { imageUrl, text: result.text });
 
               // Save generation
               await api("POST", "/api/generations", {
@@ -403,7 +403,7 @@ export function useWorkflowState(): WorkflowContextValue {
             } catch (e) {
               const errMsg = String(e);
               updateNodeData(nodeId, { status: "error", error: errMsg });
-              outputs.set(nodeId, { text: prompt });
+              outputs.set(nodeId, {});
 
               await api("POST", "/api/generations", {
                 workflow_id: activeIdRef.current,
