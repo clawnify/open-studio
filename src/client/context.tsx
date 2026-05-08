@@ -24,6 +24,7 @@ export interface WorkflowContextValue {
 
   // Execution
   executeWorkflow: () => Promise<void>;
+  runNode: (nodeId: string) => Promise<void>;
   executing: boolean;
 
   // Models

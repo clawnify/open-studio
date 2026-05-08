@@ -4,13 +4,28 @@ interface Props {
   id: string;
   isInput?: boolean;
   onToggleInput?: (value: boolean) => void;
+  /** Show a "Run" button that re-executes only this node (using upstream nodes' last outputs). */
+  canRerun?: boolean;
 }
 
-export function NodeToolbar({ id, isInput, onToggleInput }: Props) {
-  const { deleteNode } = useWorkflow();
+export function NodeToolbar({ id, isInput, onToggleInput, canRerun }: Props) {
+  const { deleteNode, runNode, executing } = useWorkflow();
 
   return (
     <div className="node-toolbar">
+      {canRerun && (
+        <button
+          className="node-toolbar__btn"
+          onClick={() => runNode(id)}
+          disabled={executing}
+          data-tooltip="Run only this node (reuses upstream outputs)"
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="5 3 19 12 5 21 5 3" />
+          </svg>
+          <span>Run</span>
+        </button>
+      )}
       {onToggleInput && (
         <button
           className={`node-toolbar__btn ${isInput ? "node-toolbar__btn--active" : ""}`}

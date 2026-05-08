@@ -31,7 +31,7 @@ export function AnalyzeNode({ id, data }: Props) {
 
   return (
     <div className={`group flow-node analyze-node status-${data.status} relative`}>
-      <NodeToolbar id={id} />
+      <NodeToolbar id={id} canRerun />
       <NodeHeader id={id} label={data.label} icon="&#128270;" bgClass="bg-amber-50" textClass="text-amber-600" />
       <div className="p-2.5 flex flex-col gap-1.5">
         <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Instruction</label>

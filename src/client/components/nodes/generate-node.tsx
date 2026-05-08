@@ -39,7 +39,7 @@ export function GenerateNode({ id, data }: Props) {
 
   return (
     <div className={`group flow-node generate-node status-${data.status} relative`}>
-      <NodeToolbar id={id} />
+      <NodeToolbar id={id} canRerun />
       <NodeHeader id={id} label={data.label} icon="&#9881;" bgClass="bg-emerald-50" textClass="text-emerald-600" />
       <div className="p-2.5 flex flex-col gap-1.5">
         <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Model</label>

@@ -60,6 +60,41 @@ async function splitImage(src: string, rows: number, cols: number): Promise<stri
   return tiles;
 }
 
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Canvas toBlob failed"))), type, quality);
+  });
+}
+
+/**
+ * PNG when it fits under `maxBytes`; otherwise JPEG with descending quality,
+ * then 25%-per-pass downscale. Ensures the merged image stays small enough to
+ * be used as a source for downstream nodes (model upload limits).
+ */
+async function canvasToCappedBlob(canvas: HTMLCanvasElement, maxBytes: number): Promise<Blob> {
+  const png = await canvasToBlob(canvas, "image/png");
+  if (png.size <= maxBytes) return png;
+
+  let work = canvas;
+  let quality = 0.92;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const blob = await canvasToBlob(work, "image/jpeg", quality);
+    if (blob.size <= maxBytes) return blob;
+    if (quality > 0.6) { quality -= 0.1; continue; }
+    const scaled = document.createElement("canvas");
+    scaled.width = Math.max(1, Math.floor(work.width * 0.75));
+    scaled.height = Math.max(1, Math.floor(work.height * 0.75));
+    const ctx = scaled.getContext("2d");
+    if (!ctx) break;
+    ctx.drawImage(work, 0, 0, scaled.width, scaled.height);
+    work = scaled;
+    quality = 0.85;
+  }
+  return canvasToBlob(work, "image/jpeg", 0.7);
+}
+
+const REFINE_MERGED_MAX_BYTES = 15 * 1024 * 1024;
+
 async function stitchTiles(srcs: string[], rows: number, cols: number): Promise<Blob> {
   const imgs = await Promise.all(srcs.map(loadImage));
   // Use the largest dimensions seen across tiles (model output sizes can drift slightly)
@@ -76,9 +111,7 @@ async function stitchTiles(srcs: string[], rows: number, cols: number): Promise<
       ctx.drawImage(imgs[idx], c * tileW, r * tileH, tileW, tileH);
     }
   }
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Canvas toBlob failed"))), "image/png");
-  });
+  return canvasToCappedBlob(canvas, REFINE_MERGED_MAX_BYTES);
 }
 
 async function uploadBlob(blob: Blob): Promise<string> {
@@ -353,68 +386,19 @@ export function useWorkflowState(): WorkflowContextValue {
 
   // ── Workflow execution engine ──────────────────────────────────
 
-  const executeWorkflow = useCallback(async () => {
-    if (!activeIdRef.current || executing) return;
-    setExecuting(true);
-    setError(null);
+  type ExecOutputs = Map<string, { text?: string; promptText?: string; imageUrl?: string }>;
 
-    try {
-      // Topological sort
-      const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-      const inDegree = new Map<string, number>();
-      const adjList = new Map<string, string[]>();
-
-      nodes.forEach((n) => {
-        inDegree.set(n.id, 0);
-        adjList.set(n.id, []);
-      });
-
-      // Real edges + virtual edges from {{nodeId}} pill references inside prompt text.
-      // Without these, a prompt that references an analyze node only via {{...}} (no
-      // drawn edge) can run before the analyze node and resolve to "".
-      const allDeps: Array<{ source: string; target: string }> = edges.map((e) => ({ source: e.source, target: e.target }));
-      for (const n of nodes) {
-        if (n.type !== "prompt") continue;
-        const text = ((n.data as Record<string, unknown>).text as string) || "";
-        for (const m of text.matchAll(/\{\{(.+?)\}\}/g)) {
-          const refId = m[1].trim();
-          if (refId === n.id || !nodeMap.has(refId)) continue;
-          if (allDeps.some((d) => d.source === refId && d.target === n.id)) continue;
-          allDeps.push({ source: refId, target: n.id });
-        }
-      }
-      allDeps.forEach((e) => {
-        inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
-        adjList.get(e.source)?.push(e.target);
-      });
-
-      // Topological levels — nodes at the same level have no dependencies on
-      // each other and can run in parallel.
-      const levels: string[][] = [];
-      let frontier: string[] = [];
-      inDegree.forEach((deg, id) => { if (deg === 0) frontier.push(id); });
-      while (frontier.length > 0) {
-        levels.push(frontier);
-        const next: string[] = [];
-        for (const id of frontier) {
-          for (const child of adjList.get(id) || []) {
-            const newDeg = (inDegree.get(child) || 1) - 1;
-            inDegree.set(child, newDeg);
-            if (newDeg === 0) next.push(child);
-          }
-        }
-        frontier = next;
-      }
-
-      // Execute nodes in order, passing data through edges
-      const outputs = new Map<string, { text?: string; promptText?: string; imageUrl?: string }>();
-
-      const executeNode = async (nodeId: string) => {
+  const executeNode = useCallback(async (
+    nodeId: string,
+    nodeMap: Map<string, Node>,
+    allEdges: Edge[],
+    outputs: ExecOutputs,
+  ) => {
         const node = nodeMap.get(nodeId);
         if (!node) return;
 
         // Gather inputs from connected source nodes
-        const incoming = edges.filter((e) => e.target === nodeId);
+        const incoming = allEdges.filter((e) => e.target === nodeId);
         let inputText = "";
         let inputPromptText = "";
         const inputImages: string[] = [];
@@ -602,20 +586,64 @@ export function useWorkflowState(): WorkflowContextValue {
             break;
           }
         }
-      };
+  }, [updateNodeData]);
 
-      // Same-level nodes run in parallel; rate-limit-aware throttling lives
-      // server-side (the /api/analyze and /api/generate endpoints retry on
-      // 429 with backoff). Promise.allSettled prevents one failed node from
-      // killing the rest of the level.
-      for (const level of levels) {
-        await Promise.allSettled(level.map(executeNode));
+  const executeWorkflow = useCallback(async () => {
+    if (!activeIdRef.current || executing) return;
+    setExecuting(true);
+    setError(null);
+
+    try {
+      // Topological sort
+      const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+      const inDegree = new Map<string, number>();
+      const adjList = new Map<string, string[]>();
+
+      nodes.forEach((n) => {
+        inDegree.set(n.id, 0);
+        adjList.set(n.id, []);
+      });
+
+      // Real edges + virtual edges from {{nodeId}} pill references inside prompt text.
+      const allDeps: Array<{ source: string; target: string }> = edges.map((e) => ({ source: e.source, target: e.target }));
+      for (const n of nodes) {
+        if (n.type !== "prompt") continue;
+        const text = ((n.data as Record<string, unknown>).text as string) || "";
+        for (const m of text.matchAll(/\{\{(.+?)\}\}/g)) {
+          const refId = m[1].trim();
+          if (refId === n.id || !nodeMap.has(refId)) continue;
+          if (allDeps.some((d) => d.source === refId && d.target === n.id)) continue;
+          allDeps.push({ source: refId, target: n.id });
+        }
+      }
+      allDeps.forEach((e) => {
+        inDegree.set(e.target, (inDegree.get(e.target) || 0) + 1);
+        adjList.get(e.source)?.push(e.target);
+      });
+
+      const levels: string[][] = [];
+      let frontier: string[] = [];
+      inDegree.forEach((deg, id) => { if (deg === 0) frontier.push(id); });
+      while (frontier.length > 0) {
+        levels.push(frontier);
+        const next: string[] = [];
+        for (const id of frontier) {
+          for (const child of adjList.get(id) || []) {
+            const newDeg = (inDegree.get(child) || 1) - 1;
+            inDegree.set(child, newDeg);
+            if (newDeg === 0) next.push(child);
+          }
+        }
+        frontier = next;
       }
 
-      // Auto-save after execution
+      const outputs: ExecOutputs = new Map();
+      for (const level of levels) {
+        await Promise.allSettled(level.map((nid) => executeNode(nid, nodeMap, edges, outputs)));
+      }
+
       await saveWorkflow();
 
-      // Refresh generations
       if (activeIdRef.current) {
         const gens = await api<Generation[]>("GET", `/api/generations/${activeIdRef.current}`);
         setGenerations(gens);
@@ -625,7 +653,52 @@ export function useWorkflowState(): WorkflowContextValue {
     } finally {
       setExecuting(false);
     }
-  }, [nodes, edges, executing, updateNodeData, saveWorkflow]);
+  }, [nodes, edges, executing, executeNode, saveWorkflow]);
+
+  /**
+   * Run a single node, reusing upstream nodes' previously-stored runtime
+   * outputs as inputs. Useful for tweaking config (model, prompts) without
+   * paying for the whole upstream chain again.
+   */
+  const runNode = useCallback(async (nodeId: string) => {
+    if (!activeIdRef.current || executing) return;
+    setExecuting(true);
+    setError(null);
+
+    try {
+      const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+      const target = nodeMap.get(nodeId);
+      if (!target) return;
+
+      // Snapshot upstream outputs from each source node's persisted runtime data.
+      const outputs: ExecOutputs = new Map();
+      const incoming = edges.filter((e) => e.target === nodeId);
+      for (const edge of incoming) {
+        const src = nodeMap.get(edge.source);
+        if (!src) continue;
+        const d = src.data as Record<string, unknown>;
+        const out: { text?: string; promptText?: string; imageUrl?: string } = {};
+        const txt = (d.text as string) || (d.result as string);
+        if (txt) out.text = txt;
+        const img = d.imageUrl as string;
+        if (img) out.imageUrl = img;
+        const lastPrompt = d.lastPrompt as string;
+        if (lastPrompt && !out.text) out.promptText = lastPrompt;
+        outputs.set(edge.source, out);
+      }
+
+      await executeNode(nodeId, nodeMap, edges, outputs);
+
+      if (activeIdRef.current) {
+        const gens = await api<Generation[]>("GET", `/api/generations/${activeIdRef.current}`);
+        setGenerations(gens);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setExecuting(false);
+    }
+  }, [nodes, edges, executing, executeNode]);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -646,6 +719,7 @@ export function useWorkflowState(): WorkflowContextValue {
     deleteNode,
     saveWorkflow,
     executeWorkflow,
+    runNode,
     executing,
     models,
     generations,

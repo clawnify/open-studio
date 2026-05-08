@@ -31,7 +31,7 @@ export function RefineNode({ id, data }: Props) {
 
   return (
     <div className={`group flow-node refine-node status-${data.status} relative`} style={{ width: 280 }}>
-      <NodeToolbar id={id} />
+      <NodeToolbar id={id} canRerun />
       <NodeHeader id={id} label={data.label} icon="&#9783;" bgClass="bg-fuchsia-50" textClass="text-fuchsia-600" />
       <div className="p-2.5 flex flex-col gap-1.5">
         <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Model</label>
