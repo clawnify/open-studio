@@ -56,8 +56,8 @@ body {
 .react-flow__controls-button { background: white !important; border-color: var(--color-border-dim) !important; fill: theme(colors.gray.500) !important; color: theme(colors.gray.500) !important; }
 .react-flow__controls-button:hover { background: var(--color-surface-card) !important; }
 .react-flow__minimap { @apply !rounded-lg !border !border-border-dim overflow-hidden; }
-.react-flow__edge-path { stroke: var(--color-accent) !important; stroke-width: 2 !important; }
-.react-flow__connection-line { stroke: var(--color-accent) !important; stroke-width: 2 !important; }
+.react-flow__edge-path { stroke: var(--color-border-mid) !important; stroke-width: 2 !important; }
+.react-flow__connection-line { stroke: var(--color-border-mid) !important; stroke-width: 2 !important; }
 .react-flow__handle { @apply !w-2.5 !h-2.5 !border-2 transition-colors; border-color: white !important; }
 .react-flow__handle:hover { border-color: var(--color-accent) !important; }
 

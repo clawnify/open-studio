@@ -255,13 +255,13 @@ app.openapi(generateImage, async (c) => {
     }
     content.push({ type: "text", text: prompt });
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://openclaw.app",
-        "X-Title": "Flow Studio",
+        "HTTP-Referer": "https://clawnify.com",
+        "X-Title": "Clawnify",
       },
       body: JSON.stringify({
         model,
@@ -361,12 +361,70 @@ const ANALYZE_MODELS = [
 
 app.get("/api/analyze-models", (c) => c.json(ANALYZE_MODELS, 200));
 
+/**
+ * Retry-on-429 wrapper. Honors `Retry-After` header (seconds) when present;
+ * otherwise uses exponential backoff capped at 10s. The optional
+ * `onRateLimit` callback is invoked the first time we see a 429 so callers
+ * (e.g. the v1 execute handler) can shrink their concurrency limit live.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: { maxRetries?: number; onRateLimit?: () => void } = {},
+): Promise<Response> {
+  const { maxRetries = 4, onRateLimit } = opts;
+  let delay = 1000;
+  let signaled = false;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, init);
+    if (res.status !== 429 || attempt === maxRetries) return res;
+    if (!signaled && onRateLimit) { onRateLimit(); signaled = true; }
+    const retryAfter = res.headers.get("retry-after");
+    const waitMs = retryAfter ? Math.min(parseInt(retryAfter, 10) * 1000, 10000) : delay;
+    await new Promise((r) => setTimeout(r, waitMs));
+    delay = Math.min(delay * 2, 10000);
+  }
+  return fetch(url, init); // unreachable, makes TS happy
+}
+
+/**
+ * Adaptive concurrency limiter. Starts at `initialMax` slots; `shrink()` reduces
+ * the slot count by 1 (floor of 1) for every subsequent acquire, useful when a
+ * downstream upstream (OpenRouter) signals 429.
+ */
+function createLimiter(initialMax: number) {
+  let max = initialMax;
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const tryNext = () => {
+    while (active < max && queue.length > 0) {
+      const w = queue.shift()!;
+      active++;
+      w();
+    }
+  };
+  return {
+    run<T>(fn: () => Promise<T>): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        const exec = () => {
+          fn().then(resolve, reject).finally(() => { active--; tryNext(); });
+        };
+        if (active < max) { active++; exec(); }
+        else queue.push(exec);
+      });
+    },
+    shrink() { if (max > 1) max--; },
+    get max() { return max; },
+  };
+}
+
 async function runAnalyze(
   apiKey: string,
   prompt: string,
   model: string,
   inputImages: string[],
   outputFormat: "json" | "text",
+  onRateLimit?: () => void,
 ): Promise<{ result: string }> {
   const msgContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
   for (const imgUrl of inputImages) {
@@ -388,16 +446,16 @@ async function runAnalyze(
   };
   if (outputFormat === "json") body.response_format = { type: "json_object" };
 
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://openclaw.app",
-      "X-Title": "Flow Studio",
+      "HTTP-Referer": "https://clawnify.com",
+      "X-Title": "Clawnify",
     },
     body: JSON.stringify(body),
-  });
+  }, { onRateLimit });
   if (!response.ok) {
     const err = await response.text();
     throw new Error(`OpenRouter error: ${err}`);
@@ -510,7 +568,7 @@ app.post("/api/suggest-name", async (c) => {
   if (!apiKey) return c.json({ name: "" }, 200);
 
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -674,34 +732,44 @@ publicApp.openapi(executeWorkflow, async (c) => {
     adjList.get(e.source)?.push(e.target);
   });
 
-  const queue: string[] = [];
-  inDegree.forEach((deg, nid) => { if (deg === 0) queue.push(nid); });
-
-  const sorted: string[] = [];
-  while (queue.length > 0) {
-    const nid = queue.shift()!;
-    sorted.push(nid);
-    for (const next of adjList.get(nid) || []) {
-      const newDeg = (inDegree.get(next) || 1) - 1;
-      inDegree.set(next, newDeg);
-      if (newDeg === 0) queue.push(next);
+  // Group nodes into topological *levels* — every node at a level depends only
+  // on previous levels, so they're safe to execute in parallel.
+  const levels: string[][] = [];
+  let frontier: string[] = [];
+  inDegree.forEach((deg, nid) => { if (deg === 0) frontier.push(nid); });
+  while (frontier.length > 0) {
+    levels.push(frontier);
+    const next: string[] = [];
+    for (const nid of frontier) {
+      for (const child of adjList.get(nid) || []) {
+        const newDeg = (inDegree.get(child) || 1) - 1;
+        inDegree.set(child, newDeg);
+        if (newDeg === 0) next.push(child);
+      }
     }
+    frontier = next;
   }
 
-  // Execute nodes in topological order
-  const outputs = new Map<string, { text?: string; imageUrl?: string }>();
+  const outputs = new Map<string, { text?: string; promptText?: string; imageUrl?: string }>();
   const results: Array<{ node_id: string; type: string; label: string; output: Record<string, unknown> }> = [];
 
-  for (const nodeId of sorted) {
+  // Adaptive concurrency: starts at 8, shrinks by 1 on every 429 we observe.
+  const limiter = createLimiter(8);
+
+  const executeNode = async (nodeId: string) => {
     const node = nodeMap.get(nodeId);
-    if (!node) continue;
+    if (!node) return;
 
     const incoming = edges.filter((e) => e.target === nodeId);
     let inputText = "";
+    let inputPromptText = "";
     const inputImages: string[] = [];
     for (const edge of incoming) {
       const out = outputs.get(edge.source);
       if (out?.text) inputText += (inputText ? "\n" : "") + out.text;
+      if (out?.promptText && !out.text) {
+        inputPromptText += (inputPromptText ? "\n" : "") + out.promptText;
+      }
       if (out?.imageUrl) inputImages.push(out.imageUrl);
     }
 
@@ -724,7 +792,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
         break;
       }
       case "generateImage": {
-        const prompt = inputText || "A beautiful image";
+        const prompt = inputText || inputPromptText || "A beautiful image";
         const model = (node.data.model as string) || "google/gemini-3.1-flash-image-preview";
         const aspectRatio = (node.data.aspectRatio as string) || "1:1";
         const imageSize = (node.data.imageSize as string) || "1K";
@@ -742,13 +810,13 @@ publicApp.openapi(executeWorkflow, async (c) => {
         msgContent.push({ type: "text", text: prompt });
 
         try {
-          const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
               Authorization: `Bearer ${apiKey}`,
               "Content-Type": "application/json",
-              "HTTP-Referer": "https://openclaw.app",
-              "X-Title": "Flow Studio",
+              "HTTP-Referer": "https://clawnify.com",
+              "X-Title": "Clawnify",
             },
             body: JSON.stringify({
               model,
@@ -756,13 +824,13 @@ publicApp.openapi(executeWorkflow, async (c) => {
               modalities,
               image_config: { aspect_ratio: aspectRatio, image_size: imageSize },
             }),
-          });
+          }, { onRateLimit: () => limiter.shrink() });
 
           if (!response.ok) {
             const err = await response.text();
             results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: `OpenRouter error: ${err}` } });
-            outputs.set(nodeId, { text: prompt });
-            continue;
+            outputs.set(nodeId, { promptText: prompt });
+            return;
           }
 
           const genData = (await response.json()) as {
@@ -792,7 +860,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
             break; // take first image
           }
 
-          outputs.set(nodeId, { imageUrl, text: message?.content || undefined });
+          outputs.set(nodeId, { imageUrl, text: message?.content || undefined, promptText: prompt });
           results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { imageUrl, text: message?.content || undefined } });
 
           // Save generation
@@ -801,7 +869,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
             [wf.id, nodeId, prompt, model, imageUrl || null, "success", null],
           );
         } catch (err) {
-          outputs.set(nodeId, {});
+          outputs.set(nodeId, { promptText: prompt });
           results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: String(err) } });
           await run(
             "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -811,7 +879,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
         break;
       }
       case "analyze": {
-        const analyzePrompt = (node.data.prompt as string) || inputText || "Describe this image.";
+        const analyzePrompt = (node.data.prompt as string) || inputText || inputPromptText || "Describe this image.";
         const analyzeModel = (node.data.model as string) || "~google/gemini-flash-latest";
         const outputFormat = ((node.data.outputFormat as string) === "json" ? "json" : "text") as "json" | "text";
         if (inputImages.length === 0) {
@@ -819,7 +887,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
           break;
         }
         try {
-          const out = await runAnalyze(apiKey, analyzePrompt, analyzeModel, inputImages, outputFormat);
+          const out = await runAnalyze(apiKey, analyzePrompt, analyzeModel, inputImages, outputFormat, () => limiter.shrink());
           outputs.set(nodeId, { text: out.result });
           results.push({ node_id: nodeId, type: "analyze", label: (node.data.label as string) || nodeId, output: { text: out.result, format: outputFormat } });
         } catch (err) {
@@ -834,6 +902,10 @@ publicApp.openapi(executeWorkflow, async (c) => {
         break;
       }
     }
+  };
+
+  for (const level of levels) {
+    await Promise.allSettled(level.map((nid) => limiter.run(() => executeNode(nid))));
   }
 
   // Return output nodes as the primary result
@@ -849,7 +921,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
 
 const publicSpec = {
   openapi: "3.0.0" as const,
-  info: { title: "Flow Studio API", version: "1.0.0" },
+  info: { title: "Open Studio API", version: "1.0.0" },
 };
 
 publicApp.doc("/openapi.json", publicSpec);

@@ -39,6 +39,7 @@ export interface GenerateNodeData {
   status: "idle" | "running" | "success" | "error";
   imageUrl?: string;
   error?: string;
+  lastPrompt?: string;
 }
 
 export interface ImageInputNodeData {
@@ -63,9 +64,22 @@ export interface AnalyzeNodeData {
   error?: string;
 }
 
+export interface RefineNodeData {
+  label: string;
+  tilePrompts: string[];
+  tileEnabled: boolean[];
+  grid: { rows: number; cols: number };
+  model: string;
+  status: "idle" | "running" | "success" | "error";
+  imageUrl?: string;
+  error?: string;
+  lastSourceUrl?: string;
+}
+
 export type FlowNodeData =
   | PromptNodeData
   | GenerateNodeData
   | ImageInputNodeData
   | OutputNodeData
-  | AnalyzeNodeData;
+  | AnalyzeNodeData
+  | RefineNodeData;

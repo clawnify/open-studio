@@ -25,10 +25,70 @@ interface HistoryEntry {
 
 /** Drop runtime/output fields so saved workflow contains only user-authored config. */
 const RUNTIME_FIELDS_BY_TYPE: Record<string, readonly string[]> = {
-  generateImage: ["status", "imageUrl", "error"],
+  generateImage: ["status", "imageUrl", "error", "lastPrompt"],
   analyze: ["status", "result", "error"],
   output: ["imageUrl", "text"],
+  refine: ["status", "imageUrl", "error", "lastSourceUrl"],
 };
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = (e) => reject(new Error(`Failed to load image: ${src} (${e})`));
+    img.src = src;
+  });
+}
+
+async function splitImage(src: string, rows: number, cols: number): Promise<string[]> {
+  const img = await loadImage(src);
+  const tileW = Math.floor(img.naturalWidth / cols);
+  const tileH = Math.floor(img.naturalHeight / rows);
+  const tiles: string[] = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const canvas = document.createElement("canvas");
+      canvas.width = tileW;
+      canvas.height = tileH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas 2D context unavailable");
+      ctx.drawImage(img, c * tileW, r * tileH, tileW, tileH, 0, 0, tileW, tileH);
+      tiles.push(canvas.toDataURL("image/png"));
+    }
+  }
+  return tiles;
+}
+
+async function stitchTiles(srcs: string[], rows: number, cols: number): Promise<Blob> {
+  const imgs = await Promise.all(srcs.map(loadImage));
+  // Use the largest dimensions seen across tiles (model output sizes can drift slightly)
+  const tileW = Math.max(...imgs.map((i) => i.naturalWidth));
+  const tileH = Math.max(...imgs.map((i) => i.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = tileW * cols;
+  canvas.height = tileH * rows;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      ctx.drawImage(imgs[idx], c * tileW, r * tileH, tileW, tileH);
+    }
+  }
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Canvas toBlob failed"))), "image/png");
+  });
+}
+
+async function uploadBlob(blob: Blob): Promise<string> {
+  const fd = new FormData();
+  fd.append("file", new File([blob], `refine_${Date.now()}.png`, { type: "image/png" }));
+  const res = await fetch("/api/uploads", { method: "POST", body: fd });
+  if (!res.ok) throw new Error(`Upload failed: ${await res.text()}`);
+  const data = (await res.json()) as { url: string };
+  return data.url;
+}
 
 function stripRuntimeOutputs(node: Node): Node {
   const fields = RUNTIME_FIELDS_BY_TYPE[node.type || ""];
@@ -229,6 +289,16 @@ export function useWorkflowState(): WorkflowContextValue {
         case "analyze":
           data = { label: "Analyze", prompt: "Describe what you see.", model: "~google/gemini-flash-latest", outputFormat: "text", status: "idle" };
           break;
+        case "refine":
+          data = {
+            label: "Refine",
+            tilePrompts: ["", "", "", ""],
+            tileEnabled: [true, true, true, true],
+            grid: { rows: 2, cols: 2 },
+            model: "google/gemini-3.1-flash-image-preview",
+            status: "idle",
+          };
+          break;
         case "output":
           data = { label: "Output", imageUrl: "", text: "" };
           break;
@@ -318,36 +388,42 @@ export function useWorkflowState(): WorkflowContextValue {
         adjList.get(e.source)?.push(e.target);
       });
 
-      const queue: string[] = [];
-      inDegree.forEach((deg, id) => {
-        if (deg === 0) queue.push(id);
-      });
-
-      const sorted: string[] = [];
-      while (queue.length > 0) {
-        const id = queue.shift()!;
-        sorted.push(id);
-        for (const next of adjList.get(id) || []) {
-          const newDeg = (inDegree.get(next) || 1) - 1;
-          inDegree.set(next, newDeg);
-          if (newDeg === 0) queue.push(next);
+      // Topological levels — nodes at the same level have no dependencies on
+      // each other and can run in parallel.
+      const levels: string[][] = [];
+      let frontier: string[] = [];
+      inDegree.forEach((deg, id) => { if (deg === 0) frontier.push(id); });
+      while (frontier.length > 0) {
+        levels.push(frontier);
+        const next: string[] = [];
+        for (const id of frontier) {
+          for (const child of adjList.get(id) || []) {
+            const newDeg = (inDegree.get(child) || 1) - 1;
+            inDegree.set(child, newDeg);
+            if (newDeg === 0) next.push(child);
+          }
         }
+        frontier = next;
       }
 
       // Execute nodes in order, passing data through edges
-      const outputs = new Map<string, { text?: string; imageUrl?: string }>();
+      const outputs = new Map<string, { text?: string; promptText?: string; imageUrl?: string }>();
 
-      for (const nodeId of sorted) {
+      const executeNode = async (nodeId: string) => {
         const node = nodeMap.get(nodeId);
-        if (!node) continue;
+        if (!node) return;
 
         // Gather inputs from connected source nodes
         const incoming = edges.filter((e) => e.target === nodeId);
         let inputText = "";
+        let inputPromptText = "";
         const inputImages: string[] = [];
         for (const edge of incoming) {
           const out = outputs.get(edge.source);
           if (out?.text) inputText += (inputText ? "\n" : "") + out.text;
+          if (out?.promptText && !out.text) {
+            inputPromptText += (inputPromptText ? "\n" : "") + out.promptText;
+          }
           if (out?.imageUrl) inputImages.push(out.imageUrl);
         }
 
@@ -371,7 +447,7 @@ export function useWorkflowState(): WorkflowContextValue {
             break;
           }
           case "generateImage": {
-            const prompt = inputText || "A beautiful image";
+            const prompt = inputText || inputPromptText || "A beautiful image";
             const model = (data.model as string) || "google/gemini-3.1-flash-image-preview";
             const aspectRatio = (data.aspectRatio as string) || "1:1";
             const imageSize = (data.imageSize as string) || "1K";
@@ -388,8 +464,8 @@ export function useWorkflowState(): WorkflowContextValue {
               const img = result.images[0];
               const imageUrl = img?.url || "";
 
-              updateNodeData(nodeId, { status: "success", imageUrl });
-              outputs.set(nodeId, { imageUrl, text: result.text });
+              updateNodeData(nodeId, { status: "success", imageUrl, lastPrompt: prompt });
+              outputs.set(nodeId, { imageUrl, text: result.text, promptText: prompt });
 
               // Save generation
               await api("POST", "/api/generations", {
@@ -403,7 +479,7 @@ export function useWorkflowState(): WorkflowContextValue {
             } catch (e) {
               const errMsg = String(e);
               updateNodeData(nodeId, { status: "error", error: errMsg });
-              outputs.set(nodeId, {});
+              outputs.set(nodeId, { promptText: prompt });
 
               await api("POST", "/api/generations", {
                 workflow_id: activeIdRef.current,
@@ -418,7 +494,7 @@ export function useWorkflowState(): WorkflowContextValue {
             break;
           }
           case "analyze": {
-            const analyzePrompt = (data.prompt as string) || inputText || "Describe this image.";
+            const analyzePrompt = (data.prompt as string) || inputText || inputPromptText || "Describe this image.";
             const analyzeModel = (data.model as string) || "google/gemini-2.5-flash";
             const outputFormat = ((data.outputFormat as string) === "json" ? "json" : "text") as "json" | "text";
             if (inputImages.length === 0) {
@@ -442,6 +518,80 @@ export function useWorkflowState(): WorkflowContextValue {
             }
             break;
           }
+          case "refine": {
+            const grid = (data.grid as { rows: number; cols: number }) || { rows: 2, cols: 2 };
+            const tileCount = grid.rows * grid.cols;
+            const tilePrompts = ((data.tilePrompts as string[]) || []).slice(0, tileCount);
+            while (tilePrompts.length < tileCount) tilePrompts.push("");
+            const tileEnabled = ((data.tileEnabled as boolean[]) || []).slice(0, tileCount);
+            while (tileEnabled.length < tileCount) tileEnabled.push(true);
+            const refineModel = (data.model as string) || "google/gemini-3.1-flash-image-preview";
+
+            // Source handle ("source"): the GenerateImage node whose output we split into tiles.
+            // Context handle ("context"): any other node — text gets prepended, images become extra references.
+            const sourceEdges = incoming.filter((e) => (e as { targetHandle?: string }).targetHandle === "source");
+            const contextEdges = incoming.filter((e) => (e as { targetHandle?: string }).targetHandle === "context");
+
+            const sourceEdge = sourceEdges.find((e) => nodeMap.get(e.source)?.type === "generateImage");
+            const sourceNode = sourceEdge ? nodeMap.get(sourceEdge.source) : undefined;
+            const sourceUrl = sourceEdge ? outputs.get(sourceEdge.source)?.imageUrl : undefined;
+            if (!sourceNode || !sourceUrl) {
+              updateNodeData(nodeId, { status: "error", error: "Connect a Generate Image to the 'image' input." });
+              outputs.set(nodeId, {});
+              break;
+            }
+            const sourceData = sourceNode.data as Record<string, unknown>;
+            const aspectRatio = (sourceData.aspectRatio as string) || "1:1";
+            const tileSize = (sourceData.imageSize as string) || "1K";
+
+            // Gather context: text from prompt/analyze nodes, images from imageInput/generateImage/refine.
+            const contextTextParts: string[] = [];
+            const contextImages: string[] = [];
+            for (const edge of contextEdges) {
+              const out = outputs.get(edge.source);
+              if (!out) continue;
+              if (out.text) contextTextParts.push(out.text);
+              else if (out.promptText) contextTextParts.push(out.promptText);
+              if (out.imageUrl) contextImages.push(out.imageUrl);
+            }
+            const contextText = contextTextParts.join("\n");
+
+            updateNodeData(nodeId, { status: "running", error: undefined, imageUrl: undefined, lastSourceUrl: sourceUrl });
+
+            try {
+              const tiles = await splitImage(sourceUrl, grid.rows, grid.cols);
+              const resultTiles = await Promise.all(
+                tiles.map(async (tileDataUrl, idx) => {
+                  if (!tileEnabled[idx]) return tileDataUrl;
+                  const parts = [contextText.trim(), tilePrompts[idx].trim()].filter(Boolean);
+                  const prompt = parts.length ? parts.join("\n") : "Refine this image region while keeping it visually consistent with the surrounding context.";
+                  const result = await api<{ images: Array<{ url: string }> }>(
+                    "POST",
+                    "/api/generate",
+                    {
+                      prompt,
+                      model: refineModel,
+                      aspect_ratio: aspectRatio,
+                      image_size: tileSize,
+                      input_images: [tileDataUrl, ...contextImages],
+                    },
+                  );
+                  const url = result.images[0]?.url;
+                  if (!url) throw new Error(`Tile ${idx + 1} returned no image`);
+                  return url;
+                }),
+              );
+              const stitched = await stitchTiles(resultTiles, grid.rows, grid.cols);
+              const finalUrl = await uploadBlob(stitched);
+              updateNodeData(nodeId, { status: "success", imageUrl: finalUrl });
+              outputs.set(nodeId, { imageUrl: finalUrl });
+            } catch (e) {
+              const errMsg = String(e);
+              updateNodeData(nodeId, { status: "error", error: errMsg });
+              outputs.set(nodeId, {});
+            }
+            break;
+          }
           case "output": {
             const lastImage = inputImages[inputImages.length - 1] || "";
             updateNodeData(nodeId, {
@@ -452,6 +602,14 @@ export function useWorkflowState(): WorkflowContextValue {
             break;
           }
         }
+      };
+
+      // Same-level nodes run in parallel; rate-limit-aware throttling lives
+      // server-side (the /api/analyze and /api/generate endpoints retry on
+      // 429 with backoff). Promise.allSettled prevents one failed node from
+      // killing the rest of the level.
+      for (const level of levels) {
+        await Promise.allSettled(level.map(executeNode));
       }
 
       // Auto-save after execution

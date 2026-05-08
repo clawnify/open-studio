@@ -82,14 +82,23 @@ function JustifiedRow({ items, containerWidth, onSelect, onDragStart, onUseAsSou
             )}
             <div className="absolute inset-x-0 bottom-0 pt-8 px-3 pb-3 bg-gradient-to-t from-black/60 to-transparent flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <span className="text-[11px] text-white leading-snug">{gen.prompt.slice(0, 80)}{gen.prompt.length > 80 ? "..." : ""}</span>
-              <div className="flex items-center justify-between mt-1">
+              <div className="flex items-center justify-between mt-1 gap-1">
                 <span className="text-[10px] text-white/60">{gen.model.split("/").pop()}</span>
-                <button
-                  className="text-[10px] text-white/80 bg-white/15 hover:bg-white/25 border-none px-2 py-0.5 cursor-pointer transition-colors"
-                  onClick={(e) => { e.stopPropagation(); if (gen.image_url) onUseAsSource(gen.image_url); }}
-                >
-                  Use as source
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    className="text-[10px] text-white/80 bg-white/15 hover:bg-white/25 border-none px-2 py-0.5 cursor-pointer transition-colors"
+                    onClick={async (e) => { e.stopPropagation(); try { await navigator.clipboard.writeText(gen.prompt); } catch {} }}
+                    title="Copy prompt"
+                  >
+                    ⧉ Copy
+                  </button>
+                  <button
+                    className="text-[10px] text-white/80 bg-white/15 hover:bg-white/25 border-none px-2 py-0.5 cursor-pointer transition-colors"
+                    onClick={(e) => { e.stopPropagation(); if (gen.image_url) onUseAsSource(gen.image_url); }}
+                  >
+                    Use as source
+                  </button>
+                </div>
               </div>
             </div>
           </div>

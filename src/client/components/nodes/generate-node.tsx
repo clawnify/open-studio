@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { useWorkflow } from "../../context";
 import { NodeHeader } from "./node-header";
@@ -8,9 +9,36 @@ interface Props { id: string; data: GenerateNodeData; }
 
 export function GenerateNode({ id, data }: Props) {
   const { updateNodeData, models } = useWorkflow();
+  const [copied, setCopied] = useState(false);
   const selectClass = "w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs py-1 px-2 outline-none cursor-pointer appearance-none focus:border-accent";
+
+  const copyPrompt = async (e: { stopPropagation: () => void; preventDefault: () => void }) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!data.lastPrompt) return;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(data.lastPrompt);
+      ok = true;
+    } catch {
+      // Fallback for browsers/contexts where clipboard API is blocked.
+      const ta = document.createElement("textarea");
+      ta.value = data.lastPrompt;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand("copy"); } catch {}
+      document.body.removeChild(ta);
+    }
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    }
+  };
+
   return (
-    <div className={`flow-node generate-node status-${data.status} relative`}>
+    <div className={`group flow-node generate-node status-${data.status} relative`}>
       <NodeToolbar id={id} />
       <NodeHeader id={id} label={data.label} icon="&#9881;" bgClass="bg-emerald-50" textClass="text-emerald-600" />
       <div className="p-2.5 flex flex-col gap-1.5">
@@ -28,7 +56,21 @@ export function GenerateNode({ id, data }: Props) {
         </select>
         {data.status === "running" && <div className="flex items-center gap-1.5 text-[11px] p-1.5 rounded bg-blue-50 text-accent"><span className="spinner" /> Generating...</div>}
         {data.status === "error" && <div className="text-[11px] p-1.5 rounded bg-red-50 text-red-500 break-words">{data.error || "Generation failed"}</div>}
-        {data.imageUrl && <div className="rounded overflow-hidden border border-border-dim mt-1"><img className="block w-full max-h-[180px] object-cover" src={data.imageUrl} alt="Generated" /></div>}
+        {data.imageUrl && (
+          <div className="nodrag relative rounded overflow-hidden border border-border-dim mt-1">
+            <img className="block w-full max-h-[180px] object-cover" src={data.imageUrl} alt="Generated" />
+            {data.lastPrompt && (
+              <button
+                className="nodrag absolute bottom-1.5 right-1.5 text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer transition-opacity opacity-0 group-hover:opacity-100"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={copyPrompt}
+                title="Copy prompt sent to model"
+              >
+                {copied ? "✓ Copied" : "⧉ Copy prompt"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
       <Handle type="target" position={Position.Left} className="!bg-accent" id="prompt" />
       <Handle type="source" position={Position.Right} className="!bg-emerald-500" />

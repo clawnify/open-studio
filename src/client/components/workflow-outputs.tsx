@@ -4,6 +4,15 @@ import { useWorkflow } from "../context";
 export function WorkflowOutputs() {
   const { generations, activeWorkflow } = useWorkflow();
   const [selected, setSelected] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+
+  const copyPrompt = async (id: number, prompt: string) => {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1200);
+    } catch {}
+  };
 
   if (!activeWorkflow) {
     return (
@@ -53,9 +62,18 @@ export function WorkflowOutputs() {
             )}
             <div className="p-2.5 border-t border-border-dim">
               <p className="text-[11px] text-gray-700 line-clamp-2 leading-snug min-h-[28px]">{gen.prompt}</p>
-              <div className="flex items-center justify-between mt-1.5">
+              <div className="flex items-center justify-between mt-1.5 gap-2">
                 <span className="text-[10px] text-gray-400 truncate">{gen.model.split("/").pop()}</span>
-                <span className="text-[10px] text-gray-400 shrink-0 ml-2">{formatDate(gen.created_at)}</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] text-gray-400">{formatDate(gen.created_at)}</span>
+                  <button
+                    className="text-[10px] text-gray-500 hover:text-accent border border-border-dim rounded px-1.5 py-0.5 cursor-pointer transition-colors bg-white"
+                    onClick={() => copyPrompt(gen.id, gen.prompt)}
+                    title="Copy prompt"
+                  >
+                    {copiedId === gen.id ? "✓ Copied" : "⧉ Copy"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
