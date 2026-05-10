@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { useWorkflow } from "../../context";
 import { NodeHeader } from "./node-header";
@@ -9,23 +8,11 @@ interface Props { id: string; data: RefineNodeData; }
 
 export function RefineNode({ id, data }: Props) {
   const { updateNodeData, models, nodes, edges } = useWorkflow();
-  const [copied, setCopied] = useState(false);
 
   const sourceConnected = edges.some((e) => e.target === id && (e as { targetHandle?: string }).targetHandle === "source");
   const contextConnected = edges.some((e) => e.target === id && (e as { targetHandle?: string }).targetHandle === "context");
 
   const grid = data.grid || { rows: 2, cols: 2 };
-
-  const copyResult = async (e: { stopPropagation: () => void; preventDefault: () => void }) => {
-    e.stopPropagation();
-    e.preventDefault();
-    if (!data.imageUrl) return;
-    try {
-      await navigator.clipboard.writeText(data.imageUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {}
-  };
 
   const selectClass = "w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs py-1 px-2 outline-none cursor-pointer appearance-none focus:border-accent";
 
@@ -38,7 +25,15 @@ export function RefineNode({ id, data }: Props) {
         <select className={selectClass} value={data.model} onChange={(e) => updateNodeData(id, { model: e.target.value })}>
           {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
-        <p className="text-[10px] text-gray-400">Splits the source image into {grid.rows}×{grid.cols} tiles. Each tile is generated with the connected context as instruction.</p>
+        <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Tile Resolution</label>
+        <select
+          className={selectClass}
+          value={data.tileImageSize || "1K"}
+          onChange={(e) => updateNodeData(id, { tileImageSize: e.target.value })}
+        >
+          {["0.5K", "1K", "2K", "4K"].map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <p className="text-[10px] text-gray-400">Splits the source into {grid.rows}×{grid.cols} tiles, refines each, and outputs them as separate images. Connect to a Generate node to use all {grid.rows * grid.cols} as inputs. Keep ≤1K when chaining to another generate (model upload limit ~30MB).</p>
 
         {data.status === "running" && (
           <div className="flex items-center gap-1.5 text-[11px] p-1.5 rounded bg-fuchsia-50 text-fuchsia-600">
@@ -48,17 +43,9 @@ export function RefineNode({ id, data }: Props) {
         {data.status === "error" && (
           <div className="text-[11px] p-1.5 rounded bg-red-50 text-red-500 break-words">{data.error || "Refine failed"}</div>
         )}
-        {data.imageUrl && (
-          <div className="nodrag relative rounded overflow-hidden border border-border-dim mt-1">
-            <img className="block w-full max-h-[200px] object-cover" src={data.imageUrl} alt="Refined" />
-            <button
-              className="nodrag absolute bottom-1.5 right-1.5 text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer transition-opacity opacity-0 group-hover:opacity-100"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={copyResult}
-              title="Copy image URL"
-            >
-              {copied ? "✓ Copied" : "⧉ Copy URL"}
-            </button>
+        {data.status === "success" && data.imageUrls && data.imageUrls.length > 0 && (
+          <div className="text-[11px] p-1.5 rounded bg-emerald-50 text-emerald-600">
+            ✓ {data.imageUrls.length} tile{data.imageUrls.length === 1 ? "" : "s"} ready
           </div>
         )}
       </div>

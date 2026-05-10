@@ -70,8 +70,10 @@ export interface RefineNodeData {
   tileEnabled: boolean[];
   grid: { rows: number; cols: number };
   model: string;
+  /** Output resolution per tile. Smaller keeps downstream payloads under model limits. */
+  tileImageSize: string;
   status: "idle" | "running" | "success" | "error";
-  imageUrl?: string;
+  imageUrls?: string[];
   error?: string;
   lastSourceUrl?: string;
 }

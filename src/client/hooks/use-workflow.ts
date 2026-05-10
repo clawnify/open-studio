@@ -28,7 +28,7 @@ const RUNTIME_FIELDS_BY_TYPE: Record<string, readonly string[]> = {
   generateImage: ["status", "imageUrl", "error", "lastPrompt"],
   analyze: ["status", "result", "error"],
   output: ["imageUrl", "text"],
-  refine: ["status", "imageUrl", "error", "lastSourceUrl"],
+  refine: ["status", "imageUrls", "error", "lastSourceUrl"],
 };
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -58,69 +58,6 @@ async function splitImage(src: string, rows: number, cols: number): Promise<stri
     }
   }
   return tiles;
-}
-
-function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Canvas toBlob failed"))), type, quality);
-  });
-}
-
-/**
- * PNG when it fits under `maxBytes`; otherwise JPEG with descending quality,
- * then 25%-per-pass downscale. Ensures the merged image stays small enough to
- * be used as a source for downstream nodes (model upload limits).
- */
-async function canvasToCappedBlob(canvas: HTMLCanvasElement, maxBytes: number): Promise<Blob> {
-  const png = await canvasToBlob(canvas, "image/png");
-  if (png.size <= maxBytes) return png;
-
-  let work = canvas;
-  let quality = 0.92;
-  for (let attempt = 0; attempt < 6; attempt++) {
-    const blob = await canvasToBlob(work, "image/jpeg", quality);
-    if (blob.size <= maxBytes) return blob;
-    if (quality > 0.6) { quality -= 0.1; continue; }
-    const scaled = document.createElement("canvas");
-    scaled.width = Math.max(1, Math.floor(work.width * 0.75));
-    scaled.height = Math.max(1, Math.floor(work.height * 0.75));
-    const ctx = scaled.getContext("2d");
-    if (!ctx) break;
-    ctx.drawImage(work, 0, 0, scaled.width, scaled.height);
-    work = scaled;
-    quality = 0.85;
-  }
-  return canvasToBlob(work, "image/jpeg", 0.7);
-}
-
-const REFINE_MERGED_MAX_BYTES = 15 * 1024 * 1024;
-
-async function stitchTiles(srcs: string[], rows: number, cols: number): Promise<Blob> {
-  const imgs = await Promise.all(srcs.map(loadImage));
-  // Use the largest dimensions seen across tiles (model output sizes can drift slightly)
-  const tileW = Math.max(...imgs.map((i) => i.naturalWidth));
-  const tileH = Math.max(...imgs.map((i) => i.naturalHeight));
-  const canvas = document.createElement("canvas");
-  canvas.width = tileW * cols;
-  canvas.height = tileH * rows;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2D context unavailable");
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const idx = r * cols + c;
-      ctx.drawImage(imgs[idx], c * tileW, r * tileH, tileW, tileH);
-    }
-  }
-  return canvasToCappedBlob(canvas, REFINE_MERGED_MAX_BYTES);
-}
-
-async function uploadBlob(blob: Blob): Promise<string> {
-  const fd = new FormData();
-  fd.append("file", new File([blob], `refine_${Date.now()}.png`, { type: "image/png" }));
-  const res = await fetch("/api/uploads", { method: "POST", body: fd });
-  if (!res.ok) throw new Error(`Upload failed: ${await res.text()}`);
-  const data = (await res.json()) as { url: string };
-  return data.url;
 }
 
 function stripRuntimeOutputs(node: Node): Node {
@@ -329,6 +266,7 @@ export function useWorkflowState(): WorkflowContextValue {
             tileEnabled: [true, true, true, true],
             grid: { rows: 2, cols: 2 },
             model: "google/gemini-3.1-flash-image-preview",
+            tileImageSize: "1K",
             status: "idle",
           };
           break;
@@ -386,7 +324,7 @@ export function useWorkflowState(): WorkflowContextValue {
 
   // ── Workflow execution engine ──────────────────────────────────
 
-  type ExecOutputs = Map<string, { text?: string; promptText?: string; imageUrl?: string }>;
+  type ExecOutputs = Map<string, { text?: string; promptText?: string; imageUrl?: string; imageUrls?: string[] }>;
 
   const executeNode = useCallback(async (
     nodeId: string,
@@ -409,6 +347,7 @@ export function useWorkflowState(): WorkflowContextValue {
             inputPromptText += (inputPromptText ? "\n" : "") + out.promptText;
           }
           if (out?.imageUrl) inputImages.push(out.imageUrl);
+          if (out?.imageUrls) inputImages.push(...out.imageUrls);
         }
 
         const data = node.data as Record<string, unknown>;
@@ -526,7 +465,9 @@ export function useWorkflowState(): WorkflowContextValue {
             }
             const sourceData = sourceNode.data as Record<string, unknown>;
             const aspectRatio = (sourceData.aspectRatio as string) || "1:1";
-            const tileSize = (sourceData.imageSize as string) || "1K";
+            // Per-tile output resolution. Defaults to 1K (capped for downstream
+            // chain payload limits — 4 × 2K tiles can exceed OpenRouter's 30MB).
+            const tileSize = (data.tileImageSize as string) || "1K";
 
             // Gather context: text from prompt/analyze nodes, images from imageInput/generateImage/refine.
             const contextTextParts: string[] = [];
@@ -540,13 +481,22 @@ export function useWorkflowState(): WorkflowContextValue {
             }
             const contextText = contextTextParts.join("\n");
 
-            updateNodeData(nodeId, { status: "running", error: undefined, imageUrl: undefined, lastSourceUrl: sourceUrl });
+            updateNodeData(nodeId, { status: "running", error: undefined, imageUrls: undefined, lastSourceUrl: sourceUrl });
 
             try {
               const tiles = await splitImage(sourceUrl, grid.rows, grid.cols);
               const resultTiles = await Promise.all(
                 tiles.map(async (tileDataUrl, idx) => {
-                  if (!tileEnabled[idx]) return tileDataUrl;
+                  if (!tileEnabled[idx]) {
+                    // For skipped tiles we still need a URL we can pass downstream;
+                    // upload the original cropped tile to /api/uploads.
+                    const blob = await (await fetch(tileDataUrl)).blob();
+                    const fd = new FormData();
+                    fd.append("file", new File([blob], `refine_skip_${Date.now()}_${idx}.png`, { type: "image/png" }));
+                    const r = await fetch("/api/uploads", { method: "POST", body: fd });
+                    const j = (await r.json()) as { url: string };
+                    return j.url;
+                  }
                   const parts = [contextText.trim(), tilePrompts[idx].trim()].filter(Boolean);
                   const prompt = parts.length ? parts.join("\n") : "Refine this image region while keeping it visually consistent with the surrounding context.";
                   const result = await api<{ images: Array<{ url: string }> }>(
@@ -565,10 +515,8 @@ export function useWorkflowState(): WorkflowContextValue {
                   return url;
                 }),
               );
-              const stitched = await stitchTiles(resultTiles, grid.rows, grid.cols);
-              const finalUrl = await uploadBlob(stitched);
-              updateNodeData(nodeId, { status: "success", imageUrl: finalUrl });
-              outputs.set(nodeId, { imageUrl: finalUrl });
+              updateNodeData(nodeId, { status: "success", imageUrls: resultTiles });
+              outputs.set(nodeId, { imageUrls: resultTiles });
             } catch (e) {
               const errMsg = String(e);
               updateNodeData(nodeId, { status: "error", error: errMsg });
@@ -677,11 +625,13 @@ export function useWorkflowState(): WorkflowContextValue {
         const src = nodeMap.get(edge.source);
         if (!src) continue;
         const d = src.data as Record<string, unknown>;
-        const out: { text?: string; promptText?: string; imageUrl?: string } = {};
+        const out: { text?: string; promptText?: string; imageUrl?: string; imageUrls?: string[] } = {};
         const txt = (d.text as string) || (d.result as string);
         if (txt) out.text = txt;
         const img = d.imageUrl as string;
         if (img) out.imageUrl = img;
+        const imgs = d.imageUrls as string[] | undefined;
+        if (imgs && imgs.length) out.imageUrls = imgs;
         const lastPrompt = d.lastPrompt as string;
         if (lastPrompt && !out.text) out.promptText = lastPrompt;
         outputs.set(edge.source, out);

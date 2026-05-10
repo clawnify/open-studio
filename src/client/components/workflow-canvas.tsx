@@ -64,11 +64,41 @@ export function WorkflowCanvas() {
     );
   }
 
+  // When a node is selected, emphasize:
+  //   - any edge touching it (incoming or outgoing) — thicker stroke
+  //   - source nodes feeding into it — bigger output (right) handle
+  // We compute decorated copies with extra className/style; selection state
+  // and event handlers continue to work against the original arrays.
+  const { decoratedNodes, decoratedEdges } = useMemo(() => {
+    const selectedIds = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+    if (selectedIds.size === 0) return { decoratedNodes: nodes, decoratedEdges: edges };
+
+    const sourcesOfSelection = new Set<string>();
+    for (const e of edges) {
+      if (selectedIds.has(e.target)) sourcesOfSelection.add(e.source);
+    }
+
+    const dn = nodes.map((n) =>
+      sourcesOfSelection.has(n.id)
+        ? { ...n, className: `${n.className || ""} flow-node-feeding-selection`.trim() }
+        : n,
+    );
+    const de = edges.map((e) => {
+      if (!selectedIds.has(e.target) && !selectedIds.has(e.source)) return e;
+      return {
+        ...e,
+        style: { ...e.style, strokeWidth: 3.5 },
+        className: `${e.className || ""} flow-edge-touching-selection`.trim(),
+      };
+    });
+    return { decoratedNodes: dn, decoratedEdges: de };
+  }, [nodes, edges]);
+
   return (
     <div className="flex-1 relative" onDragOver={onDragOver} onDrop={onDrop}>
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={decoratedNodes}
+        edges={decoratedEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
