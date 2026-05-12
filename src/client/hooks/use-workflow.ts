@@ -9,7 +9,7 @@ import {
 } from "@xyflow/react";
 import { api } from "../api";
 import type { Workflow, ModelOption, Generation } from "../types";
-import type { WorkflowContextValue, LeafResult } from "../context";
+import type { WorkflowContextValue, LeafResult, Features } from "../context";
 
 let nodeIdCounter = 0;
 function nextNodeId() {
@@ -29,6 +29,7 @@ const RUNTIME_FIELDS_BY_TYPE: Record<string, readonly string[]> = {
   analyze: ["status", "result", "error"],
   output: ["imageUrl", "text"],
   refine: ["status", "imageUrls", "error", "lastSourceUrl"],
+  upscale: ["status", "imageUrl", "error"],
 };
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -74,6 +75,7 @@ export function useWorkflowState(): WorkflowContextValue {
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<Edge>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [features, setFeatures] = useState<Features>({ openrouter: false, openai: false, fal: false });
   const [generations, setGenerations] = useState<Generation[]>([]);
   const [lastRunResults, setLastRunResults] = useState<LeafResult[]>([]);
   const [executing, setExecuting] = useState(false);
@@ -156,11 +158,13 @@ export function useWorkflowState(): WorkflowContextValue {
   useEffect(() => {
     (async () => {
       try {
-        const [wf, m] = await Promise.all([
+        const [wf, m, feat] = await Promise.all([
           api<Workflow[]>("GET", "/api/workflows"),
           api<ModelOption[]>("GET", "/api/models"),
+          api<Features>("GET", "/api/features"),
         ]);
         setModels(m);
+        setFeatures(feat);
         setWorkflows(wf);
         if (wf.length > 0) {
           await loadWorkflow(wf[0]);
@@ -231,6 +235,26 @@ export function useWorkflowState(): WorkflowContextValue {
     }
   }, []);
 
+  const refreshGenerations = useCallback(async () => {
+    if (!activeIdRef.current) return;
+    try {
+      const gens = await api<Generation[]>("GET", `/api/generations/${activeIdRef.current}`);
+      setGenerations(gens);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const duplicateWorkflow = useCallback(async (id: number) => {
+    try {
+      const wf = await api<Workflow>("POST", `/api/workflows/${id}/duplicate`);
+      setWorkflows((prev) => [wf, ...prev]);
+      await loadWorkflow(wf);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [loadWorkflow]);
+
   const onConnect = useCallback((connection: Connection) => {
     pushHistory();
     setEdges((eds) => addEdge({ ...connection, animated: true }, eds));
@@ -268,6 +292,14 @@ export function useWorkflowState(): WorkflowContextValue {
             grid: { rows: 2, cols: 2 },
             model: "google/gemini-3.1-flash-image-preview",
             tileImageSize: "1K",
+            status: "idle",
+          };
+          break;
+        case "upscale":
+          data = {
+            label: "Upscale",
+            upscaleFactor: 2,
+            outputFormat: "jpg",
             status: "idle",
           };
           break;
@@ -356,9 +388,16 @@ export function useWorkflowState(): WorkflowContextValue {
         switch (node.type) {
           case "prompt": {
             let text = (data.text as string) || "";
-            // Resolve {{nodeId}} references — fall back to `result` (analyze nodes)
+            // Resolve {{nodeId}} pill references. Topo order means any referenced
+            // prompt/analyze has already executed; prefer its resolved output from
+            // the outputs map so transitive variables (Prompt → Prompt → Prompt)
+            // chain through correctly. Fall back to raw data.text/result if the
+            // referenced node hasn't produced output yet.
             text = text.replace(/\{\{(.+?)\}\}/g, (_match, refId: string) => {
-              const ref = nodeMap.get(refId.trim());
+              const cleanId = refId.trim();
+              const resolved = outputs.get(cleanId);
+              if (resolved?.text) return resolved.text;
+              const ref = nodeMap.get(cleanId);
               if (!ref) return _match;
               const refData = ref.data as Record<string, unknown>;
               return (refData.text as string) || (refData.result as string) || "";
@@ -375,6 +414,7 @@ export function useWorkflowState(): WorkflowContextValue {
             const model = (data.model as string) || "google/gemini-3.1-flash-image-preview";
             const aspectRatio = (data.aspectRatio as string) || "1:1";
             const imageSize = (data.imageSize as string) || "1K";
+            const quality = data.quality as string | undefined;
 
             updateNodeData(nodeId, { status: "running", error: undefined, imageUrl: undefined });
 
@@ -382,7 +422,7 @@ export function useWorkflowState(): WorkflowContextValue {
               const result = await api<{ images: Array<{ url: string }>; text?: string }>(
                 "POST",
                 "/api/generate",
-                { prompt, model, aspect_ratio: aspectRatio, image_size: imageSize, input_images: inputImages.length ? inputImages : undefined }
+                { prompt, model, aspect_ratio: aspectRatio, image_size: imageSize, quality, input_images: inputImages.length ? inputImages : undefined }
               );
 
               const img = result.images[0];
@@ -525,6 +565,31 @@ export function useWorkflowState(): WorkflowContextValue {
             }
             break;
           }
+          case "upscale": {
+            const sourceUrl = inputImages[0];
+            if (!sourceUrl) {
+              updateNodeData(nodeId, { status: "error", error: "Connect an image source." });
+              outputs.set(nodeId, {});
+              break;
+            }
+            const upscaleFactor = (data.upscaleFactor as number) || 2;
+            const outputFormat = (data.outputFormat as string) || "jpg";
+            updateNodeData(nodeId, { status: "running", error: undefined, imageUrl: undefined });
+            try {
+              const result = await api<{ url: string }>(
+                "POST",
+                "/api/upscale",
+                { image_url: sourceUrl, upscale_factor: upscaleFactor, output_format: outputFormat },
+              );
+              updateNodeData(nodeId, { status: "success", imageUrl: result.url });
+              outputs.set(nodeId, { imageUrl: result.url });
+            } catch (e) {
+              const errMsg = String(e);
+              updateNodeData(nodeId, { status: "error", error: errMsg });
+              outputs.set(nodeId, {});
+            }
+            break;
+          }
           case "output": {
             const lastImage = inputImages[inputImages.length - 1] || "";
             updateNodeData(nodeId, {
@@ -647,8 +712,28 @@ export function useWorkflowState(): WorkflowContextValue {
         if (!src) continue;
         const d = src.data as Record<string, unknown>;
         const out: { text?: string; promptText?: string; imageUrl?: string; imageUrls?: string[] } = {};
-        const txt = (d.text as string) || (d.result as string);
+
+        // For prompt nodes, recursively resolve {{nodeId}} pill references
+        // against the current canvas — single-node re-runs don't have a
+        // pre-computed outputs map, so we walk the chain ourselves.
+        const resolvePromptText = (id: string, depth: number): string => {
+          if (depth > 12) return "";
+          const n = nodeMap.get(id);
+          if (!n) return "";
+          const nd = n.data as Record<string, unknown>;
+          if (n.type === "analyze") return (nd.result as string) || "";
+          if (n.type !== "prompt") return (nd.text as string) || "";
+          const raw = (nd.text as string) || "";
+          return raw.replace(/\{\{(.+?)\}\}/g, (_m, ref: string) => resolvePromptText(ref.trim(), depth + 1));
+        };
+        let txt: string | undefined;
+        if (src.type === "prompt") {
+          txt = resolvePromptText(edge.source, 0);
+        } else {
+          txt = (d.text as string) || (d.result as string);
+        }
         if (txt) out.text = txt;
+
         const img = d.imageUrl as string;
         if (img) out.imageUrl = img;
         const imgs = d.imageUrls as string[] | undefined;
@@ -680,6 +765,7 @@ export function useWorkflowState(): WorkflowContextValue {
     selectWorkflow,
     deleteWorkflow,
     renameWorkflow,
+    duplicateWorkflow,
     nodes,
     edges,
     onNodesChange,
@@ -695,7 +781,9 @@ export function useWorkflowState(): WorkflowContextValue {
     lastRunResults,
     setLastRunResults,
     models,
+    features,
     generations,
+    refreshGenerations,
     isAgent,
     loading,
     error,

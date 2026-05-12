@@ -8,6 +8,7 @@
     "storage": true
   },
   "env": {
-    "required": ["OPENROUTER_API_KEY"]
+    "required": ["OPENROUTER_API_KEY"],
+    "optional": ["OPENAI_API_KEY", "FAL_API_KEY"]
   }
 }

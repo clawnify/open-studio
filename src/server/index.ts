@@ -2,7 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { initDB, query, get, run } from "./db.js";
 import { initUploads, putUpload, getUpload, readUploadAsBase64DataUrl } from "./uploads.js";
 
-type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: string } };
+type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: string; FAL_API_KEY: string; OPENAI_API_KEY?: string } };
 
 const app = new OpenAPIHono<Env>();
 // Public sub-app — every route here MUST be registered with publicApp.openapi(...)
@@ -138,6 +138,53 @@ app.openapi(updateWorkflow, async (c) => {
   return c.json(row!, 200);
 });
 
+// ── Duplicate workflow ───────────────────────────────────────────────
+
+const duplicateWorkflow = createRoute({
+  method: "post",
+  path: "/api/workflows/{id}/duplicate",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { content: { "application/json": { schema: WorkflowSchema } }, description: "OK" },
+    404: { content: { "application/json": { schema: ErrorSchema } }, description: "Not found" },
+  },
+});
+
+app.openapi(duplicateWorkflow, async (c) => {
+  const { id } = c.req.valid("param");
+  const existing = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [id]);
+  if (!existing) return c.json({ error: "Not found" }, 404);
+
+  // Strip runtime/output fields so the duplicate starts fresh — same logic
+  // as the client's stripRuntimeOutputs but mirrored here for the server path.
+  const runtimeFields: Record<string, readonly string[]> = {
+    generateImage: ["status", "imageUrl", "error", "lastPrompt"],
+    analyze: ["status", "result", "error"],
+    output: ["imageUrl", "text"],
+    refine: ["status", "imageUrls", "error", "lastSourceUrl"],
+    upscale: ["status", "imageUrl", "error"],
+  };
+  let cleanedNodes = existing.nodes;
+  try {
+    const parsed = JSON.parse(existing.nodes) as Array<{ type?: string; data?: Record<string, unknown> }>;
+    for (const n of parsed) {
+      const fields = runtimeFields[n.type || ""];
+      if (!fields || !n.data) continue;
+      for (const f of fields) delete n.data[f];
+    }
+    cleanedNodes = JSON.stringify(parsed);
+  } catch {
+    // If parsing fails, fall back to the raw nodes string — duplicate still works.
+  }
+
+  const result = await run(
+    "INSERT INTO workflows (name, nodes, edges, viewport) VALUES (?, ?, ?, ?)",
+    [`${existing.name} (Copy)`, cleanedNodes, existing.edges, existing.viewport],
+  );
+  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [result.lastInsertRowid]);
+  return c.json(row!, 200);
+});
+
 // ── Delete workflow ──────────────────────────────────────────────────
 
 const deleteWorkflow = createRoute({
@@ -197,6 +244,251 @@ const IMAGE_ONLY_MODELS = new Set([
   "bytedance-seed/seedream-4.5",
 ]);
 
+// Explicit allowlist of models that get routed to OpenAI's REST API directly
+// (when OPENAI_API_KEY is set). The `openai/` prefix alone is NOT enough since
+// OpenRouter also uses it (e.g. openai/gpt-image-1 lives there).
+const OPENAI_DIRECT_MODELS = new Set([
+  "openai/gpt-image-2",
+  "openai/gpt-image-2-2026-04-21",
+]);
+
+/**
+ * Map an aspect ratio to one of the four sizes `/v1/images/edits` accepts —
+ * the edits endpoint only allows: `auto`, `1024x1024`, `1536x1024`, `1024x1536`.
+ * Unlike `openaiSize()` which produces arbitrary resolutions for the
+ * generations endpoint, this picks the closest standard portrait/landscape/
+ * square based on the ratio.
+ */
+function openaiEditSize(aspectRatio: string): "auto" | "1024x1024" | "1536x1024" | "1024x1536" {
+  const [aw, ah] = aspectRatio.split(":").map(Number);
+  if (!aw || !ah) return "1024x1024";
+  const ratio = aw / ah;
+  if (ratio > 1.15) return "1536x1024";
+  if (ratio < 0.87) return "1024x1536";
+  return "1024x1024";
+}
+
+// gpt-image-2 isn't currently supported on /v1/images/edits — when the user
+// selects it but provides input images (so we route through edits), fall back
+// to the latest edit-capable model.
+const OPENAI_EDIT_FALLBACK = "gpt-image-1.5";
+const OPENAI_EDIT_SUPPORTED = new Set([
+  "gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini", "chatgpt-image-latest",
+]);
+
+/**
+ * Map our (aspect_ratio, image_size) tuple to an OpenAI-supported `size`.
+ * Pins the shorter edge to a tier-specific resolution and scales the longer
+ * edge per the ratio, then clamps to OpenAI's 3840-px max and rounds to 16-px
+ * multiples (their image-gen requirement).
+ */
+function openaiSize(aspectRatio: string, imageSize: string): string {
+  const [aw, ah] = aspectRatio.split(":").map(Number);
+  if (!aw || !ah) return "1024x1024";
+  const ratio = aw / ah;
+
+  const shortEdgeByTier: Record<string, number> = {
+    "0.5K": 768,
+    "1K": 1024,
+    "2K": 1536,
+    "4K": 2160,
+  };
+  const shortPx = shortEdgeByTier[imageSize] || 1024;
+
+  let w: number, h: number;
+  if (ratio >= 1) { h = shortPx; w = Math.round(h * ratio); }
+  else { w = shortPx; h = Math.round(w / ratio); }
+
+  // Clamp the longer edge to OpenAI's max (3840px), keeping the ratio.
+  if (w > 3840) { h = Math.round((h * 3840) / w); w = 3840; }
+  if (h > 3840) { w = Math.round((w * 3840) / h); h = 3840; }
+
+  // Round to 16-px multiples per OpenAI's constraint.
+  w = Math.max(16, Math.round(w / 16) * 16);
+  h = Math.max(16, Math.round(h / 16) * 16);
+
+  return `${w}x${h}`;
+}
+
+/**
+ * Retry transient 5xx + 429 from upstream providers (OpenAI's own Cloudflare
+ * edge returns 520 fairly often under load — same backoff strategy as our
+ * `fetchWithRetry` for OpenRouter).
+ */
+async function fetchWith5xxRetry(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
+  let delay = 1000;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, init);
+    const isRetryable = res.status === 429 || (res.status >= 500 && res.status <= 599);
+    if (!isRetryable || attempt === maxRetries) return res;
+    const retryAfter = res.headers.get("retry-after");
+    const waitMs = retryAfter ? Math.min(parseInt(retryAfter, 10) * 1000, 10000) : delay;
+    await new Promise((r) => setTimeout(r, waitMs));
+    delay = Math.min(delay * 2, 10000);
+  }
+  return fetch(url, init); // unreachable
+}
+
+/**
+ * OpenAI's edge returns Cloudflare HTML error pages on 5xx — surfacing those
+ * verbatim into our error messages is noisy. Detect HTML responses and
+ * collapse them to a human-readable "Upstream 502 Bad Gateway" line.
+ */
+function summarizeUpstreamError(status: number, body: string): string {
+  const looksLikeHtml = /<!doctype html>|<html\b/i.test(body.slice(0, 200));
+  if (looksLikeHtml) {
+    const statusNames: Record<number, string> = {
+      500: "Internal Server Error",
+      502: "Bad Gateway",
+      503: "Service Unavailable",
+      504: "Gateway Timeout",
+      520: "Web Server Returned an Unknown Error",
+      521: "Web Server Is Down",
+      522: "Connection Timed Out",
+      524: "A Timeout Occurred",
+    };
+    return `${status} ${statusNames[status] || "Upstream Error"} — retried but upstream still failing`;
+  }
+  return `status ${status}: ${body.slice(0, 400)}`;
+}
+
+/** Resolve any image reference our client might pass (/api/uploads/*, data URL, or absolute URL) to a Blob. */
+async function resolveImageToBlob(url: string): Promise<Blob> {
+  if (url.startsWith("/api/uploads/")) {
+    const filename = url.replace("/api/uploads/", "");
+    const result = await getUpload(filename);
+    if (!result) throw new Error(`Upload not found: ${filename}`);
+    return new Blob([result.data], { type: result.contentType || "image/png" });
+  }
+  if (url.startsWith("data:")) {
+    const match = url.match(/^data:([^;]+);base64,(.*)$/);
+    if (!match) throw new Error("Invalid data URL");
+    const [, mime, b64] = match;
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch image (${res.status}): ${url.slice(0, 80)}`);
+  return await res.blob();
+}
+
+/** Parse OpenAI image-generation response → save each returned image to R2. */
+async function uploadOpenAIImages(data: { data?: Array<{ b64_json?: string; url?: string }> }): Promise<Array<{ url: string }>> {
+  const images: Array<{ url: string }> = [];
+  for (const img of data.data || []) {
+    let imgData: ArrayBuffer | null = null;
+    if (img.b64_json) {
+      const bin = atob(img.b64_json);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      imgData = bytes.buffer;
+    } else if (img.url) {
+      try {
+        imgData = await (await fetch(img.url)).arrayBuffer();
+      } catch {}
+    }
+    if (!imgData) continue;
+    const filename = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
+    const url = await putUpload(filename, imgData, "image/png");
+    images.push({ url });
+  }
+  return images;
+}
+
+/** Call OpenAI's image generation endpoint and return uploaded image URLs. */
+async function generateImageOpenAI(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  aspectRatio: string,
+  imageSize: string,
+  quality?: "auto" | "low" | "medium" | "high",
+): Promise<{ images: Array<{ url: string }> }> {
+  const size = openaiSize(aspectRatio, imageSize);
+  const body: Record<string, unknown> = { model, prompt, size };
+  if (quality) body.quality = quality;
+  const res = await fetchWith5xxRetry("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const rawText = await res.text();
+  if (!res.ok) {
+    throw new Error(`OpenAI error: ${summarizeUpstreamError(res.status, rawText)}`);
+  }
+  let data: { data?: Array<{ b64_json?: string; url?: string }> };
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error(`OpenAI returned non-JSON (status ${res.status}): ${rawText.slice(0, 400)}`);
+  }
+  return { images: await uploadOpenAIImages(data) };
+}
+
+/** Encode a Blob as a base64 data URL for inclusion in OpenAI's JSON `images` array. */
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return `data:${blob.type || "image/png"};base64,${btoa(binary)}`;
+}
+
+/** Call OpenAI's image edits endpoint with one or more reference images. */
+async function editImageOpenAI(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  inputImages: string[],
+  aspectRatio: string,
+  _imageSize: string,
+  quality?: "auto" | "low" | "medium" | "high",
+): Promise<{ images: Array<{ url: string }> }> {
+  // gpt-image-2 isn't on the edits enum — substitute the latest supported model.
+  const editModel = OPENAI_EDIT_SUPPORTED.has(model) ? model : OPENAI_EDIT_FALLBACK;
+  const size = openaiEditSize(aspectRatio);
+
+  // Resolve each input to a data URL for the JSON-based `images` array.
+  const images = await Promise.all(
+    inputImages.map(async (url) => ({ image_url: await blobToDataUrl(await resolveImageToBlob(url)) })),
+  );
+
+  const body: Record<string, unknown> = {
+    model: editModel,
+    prompt,
+    images,
+    size,
+  };
+  if (quality) body.quality = quality;
+
+  const res = await fetchWith5xxRetry("https://api.openai.com/v1/images/edits", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const rawText = await res.text();
+  if (!res.ok) {
+    throw new Error(`OpenAI edit error: ${summarizeUpstreamError(res.status, rawText)}`);
+  }
+  let data: { data?: Array<{ b64_json?: string; url?: string }> };
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error(`OpenAI returned non-JSON (status ${res.status}): ${rawText.slice(0, 400)}`);
+  }
+  return { images: await uploadOpenAIImages(data) };
+}
+
 const generateImage = createRoute({
   method: "post",
   path: "/api/generate",
@@ -209,6 +501,7 @@ const generateImage = createRoute({
             model: z.string().default("google/gemini-3.1-flash-image-preview"),
             aspect_ratio: z.string().default("1:1"),
             image_size: z.string().default("1K"),
+            quality: z.enum(["auto", "low", "medium", "high"]).optional(),
             input_images: z.array(z.string()).optional(),
           }),
         },
@@ -232,10 +525,40 @@ const generateImage = createRoute({
 });
 
 app.openapi(generateImage, async (c) => {
-  const { prompt, model, aspect_ratio, image_size, input_images } = c.req.valid("json");
+  const { prompt, model, aspect_ratio, image_size, quality, input_images } = c.req.valid("json");
   const apiKey = c.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     return c.json({ error: "OPENROUTER_API_KEY env variable not set" }, 500);
+  }
+
+  // OpenAI-direct-only models: surface a clear error if the key isn't set
+  // rather than letting the request fall through to OpenRouter (which doesn't
+  // host these snapshots and would return a generic "not a valid model ID").
+  if (OPENAI_DIRECT_MODELS.has(model) && !c.env.OPENAI_API_KEY) {
+    return c.json({
+      error: `Model ${model} requires OPENAI_API_KEY to be configured in the app's environment. Set it in the Clawnify dashboard, or pick a different model.`,
+    }, 500);
+  }
+
+  // Route to OpenAI direct when the model is in our explicit allowlist and
+  // OPENAI_API_KEY is set. Picks /images/edits when input_images is non-empty,
+  // /images/generations otherwise.
+  if (c.env.OPENAI_API_KEY && OPENAI_DIRECT_MODELS.has(model)) {
+    try {
+      const openaiModel = model.replace(/^openai\//, "");
+      const result = input_images && input_images.length > 0
+        ? await editImageOpenAI(
+            c.env.OPENAI_API_KEY, openaiModel, prompt, input_images,
+            aspect_ratio, image_size, quality,
+          )
+        : await generateImageOpenAI(
+            c.env.OPENAI_API_KEY, openaiModel, prompt,
+            aspect_ratio, image_size, quality,
+          );
+      return c.json(result, 200);
+    } catch (err) {
+      return c.json({ error: String(err) }, 500);
+    }
   }
 
   try {
@@ -336,7 +659,11 @@ const listModels = createRoute({
     200: {
       content: {
         "application/json": {
-          schema: z.array(z.object({ id: z.string(), name: z.string() })),
+          schema: z.array(z.object({
+            id: z.string(),
+            name: z.string(),
+            provider: z.enum(["openrouter", "openai"]).optional(),
+          })),
         },
       },
       description: "OK",
@@ -344,10 +671,24 @@ const listModels = createRoute({
   },
 });
 
+// ── Features (which providers are active based on env keys) ──────────
+
+app.get("/api/features", (c) => {
+  return c.json({
+    openrouter: !!c.env.OPENROUTER_API_KEY,
+    openai: !!c.env.OPENAI_API_KEY,
+    fal: !!c.env.FAL_API_KEY,
+  }, 200);
+});
+
 app.openapi(listModels, async (c) => {
-  const models = [
+  const hasOpenRouter = !!c.env.OPENROUTER_API_KEY;
+  const hasOpenAI = !!c.env.OPENAI_API_KEY;
+  const baseModels: Array<{ id: string; name: string }> = [
     { id: "google/gemini-3.1-flash-image-preview", name: "Gemini 3.1 Flash Image" },
     { id: "google/gemini-3-pro-image-preview", name: "Gemini 3 Pro Image" },
+    { id: "openai/gpt-image-2-2026-04-21", name: "GPT Image 2 (2026-04-21 snapshot)" },
+    { id: "openai/gpt-image-2", name: "GPT Image 2 (OpenAI direct)" },
     { id: "openai/gpt-image-1", name: "GPT Image 1" },
     { id: "openai/gpt-5-image-mini", name: "GPT-5 Image Mini" },
     { id: "openai/gpt-5-image", name: "GPT-5 Image" },
@@ -358,6 +699,12 @@ app.openapi(listModels, async (c) => {
     { id: "black-forest-labs/flux.2-klein-4b", name: "FLUX.2 Klein 4B" },
     { id: "sourceful/riverflow-v2-fast", name: "Riverflow v2 Fast" },
   ];
+  const models = baseModels
+    .map((m) => ({
+      ...m,
+      provider: (OPENAI_DIRECT_MODELS.has(m.id) ? "openai" : "openrouter") as "openai" | "openrouter",
+    }))
+    .filter((m) => (m.provider === "openai" ? hasOpenAI : hasOpenRouter));
   return c.json(models, 200);
 });
 
@@ -504,6 +851,129 @@ app.post("/api/analyze", async (c) => {
   try {
     const out = await runAnalyze(apiKey, prompt, model, input_images, output_format || "text");
     return c.json(out, 200);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Inpaint / mask edit (OpenAI gpt-image-2) ─────────────────────────
+
+app.post("/api/edit-image", async (c) => {
+  const apiKey = c.env.OPENAI_API_KEY;
+  if (!apiKey) return c.json({ error: "OPENAI_API_KEY not set" }, 500);
+
+  const { image_url, mask_data_url, prompt, model = OPENAI_EDIT_FALLBACK, quality } = await c.req.json<{
+    image_url: string;
+    mask_data_url: string;
+    prompt: string;
+    model?: string;
+    quality?: "auto" | "low" | "medium" | "high";
+  }>();
+  if (!image_url || !mask_data_url || !prompt) {
+    return c.json({ error: "image_url, mask_data_url and prompt are required" }, 400);
+  }
+
+  try {
+    const editModel = OPENAI_EDIT_SUPPORTED.has(model) ? model : OPENAI_EDIT_FALLBACK;
+    const imageDataUrl = await blobToDataUrl(await resolveImageToBlob(image_url));
+    const maskDataUrl = await blobToDataUrl(await resolveImageToBlob(mask_data_url));
+
+    const body: Record<string, unknown> = {
+      model: editModel,
+      prompt,
+      images: [{ image_url: imageDataUrl }],
+      mask: { image_url: maskDataUrl },
+    };
+    if (quality) body.quality = quality;
+
+    const res = await fetchWith5xxRetry("https://api.openai.com/v1/images/edits", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    const rawText = await res.text();
+    if (!res.ok) {
+      return c.json({ error: `OpenAI edit error: ${summarizeUpstreamError(res.status, rawText)}` }, 500);
+    }
+    let data: { data?: Array<{ b64_json?: string; url?: string }> };
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      return c.json({ error: `OpenAI returned non-JSON: ${rawText.slice(0, 400)}` }, 500);
+    }
+    const images = await uploadOpenAIImages(data);
+    if (images.length === 0) return c.json({ error: "No image returned" }, 500);
+    return c.json({ url: images[0].url }, 200);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Upscale (fal.ai SeedVR) ──────────────────────────────────────────
+
+app.post("/api/upscale", async (c) => {
+  const apiKey = c.env.FAL_API_KEY;
+  if (!apiKey) return c.json({ error: "FAL_API_KEY not set" }, 500);
+
+  const { image_url, upscale_factor, output_format } = await c.req.json<{
+    image_url: string;
+    upscale_factor?: number;
+    output_format?: "jpg" | "png" | "webp";
+  }>();
+  if (!image_url) return c.json({ error: "image_url is required" }, 400);
+
+  // Resolve /api/uploads/* to a base64 data URL so fal.ai can fetch it.
+  let inputUrl = image_url;
+  if (image_url.startsWith("/api/uploads/")) {
+    const filename = image_url.replace("/api/uploads/", "");
+    const dataUrl = await readUploadAsBase64DataUrl(filename);
+    if (dataUrl) inputUrl = dataUrl;
+  }
+
+  const fmt = output_format || "jpg";
+
+  try {
+    const res = await fetch("https://fal.run/fal-ai/seedvr/upscale/image", {
+      method: "POST",
+      headers: {
+        Authorization: `Key ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        image_url: inputUrl,
+        upscale_mode: "factor",
+        upscale_factor: upscale_factor ?? 2,
+        output_format: fmt,
+      }),
+    });
+
+    const rawText = await res.text();
+    if (!res.ok) {
+      return c.json({ error: `fal.ai error (status ${res.status}): ${rawText.slice(0, 400)}` }, 500);
+    }
+    let data: { image?: { url: string } };
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      return c.json({ error: `fal.ai returned non-JSON: ${rawText.slice(0, 400)}` }, 500);
+    }
+    const remoteUrl = data.image?.url;
+    if (!remoteUrl) return c.json({ error: "fal.ai response missing image url" }, 500);
+
+    try {
+      const imgRes = await fetch(remoteUrl);
+      const imgData = await imgRes.arrayBuffer();
+      const mime = fmt === "png" ? "image/png" : fmt === "webp" ? "image/webp" : "image/jpeg";
+      const filename = `upscale_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${fmt}`;
+      const url = await putUpload(filename, imgData, mime);
+      return c.json({ url }, 200);
+    } catch {
+      return c.json({ url: remoteUrl }, 200);
+    }
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

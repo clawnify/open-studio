@@ -1,16 +1,34 @@
 import { useState, type DragEvent } from "react";
 import { useWorkflow } from "../context";
 
-const NODE_TYPES = [
+interface NodeTypeEntry {
+  type: string;
+  icon: string;
+  label: string;
+  desc: string;
+  /** Feature flag this node depends on; node is hidden when the flag is false. */
+  requires?: "openrouter" | "fal" | "imageGen";
+}
+
+const NODE_TYPES: NodeTypeEntry[] = [
   { type: "prompt", icon: "\u270E", label: "Prompt", desc: "Text prompt input" },
-  { type: "generateImage", icon: "\u2699", label: "Generate Image", desc: "AI image generation" },
+  { type: "generateImage", icon: "\u2699", label: "Generate Image", desc: "AI image generation", requires: "imageGen" },
   { type: "imageInput", icon: "\uD83D\uDCF7", label: "Image Input", desc: "Reference image URL" },
-  { type: "analyze", icon: "\uD83D\uDD0E", label: "Analyze", desc: "Vision \u2192 text/JSON" },
-  { type: "refine", icon: "\u2737", label: "Refine", desc: "Tile-based image refinement" },
+  { type: "analyze", icon: "\uD83D\uDD0E", label: "Analyze", desc: "Vision \u2192 text/JSON", requires: "openrouter" },
+  { type: "refine", icon: "\u2737", label: "Refine", desc: "Tile-based image refinement", requires: "imageGen" },
+  { type: "upscale", icon: "\u279a", label: "Upscale", desc: "fal.ai SeedVR image upscaler", requires: "fal" },
 ];
 
 export function Sidebar() {
-  const { workflows, activeWorkflow, createWorkflow, selectWorkflow, deleteWorkflow, renameWorkflow, generations } = useWorkflow();
+  const { workflows, activeWorkflow, createWorkflow, selectWorkflow, deleteWorkflow, renameWorkflow, duplicateWorkflow, generations, features } = useWorkflow();
+  const imageGenAvailable = features.openrouter || features.openai;
+  const visibleNodeTypes = NODE_TYPES.filter((nt) => {
+    if (!nt.requires) return true;
+    if (nt.requires === "openrouter") return features.openrouter;
+    if (nt.requires === "fal") return features.fal;
+    if (nt.requires === "imageGen") return imageGenAvailable;
+    return true;
+  });
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [tab, setTab] = useState<"workflows" | "nodes" | "history">("nodes");
@@ -35,7 +53,7 @@ export function Sidebar() {
         {tab === "nodes" && (
           <div>
             <p className="text-gray-400 text-[11px] mb-2">Drag nodes onto the canvas</p>
-            {NODE_TYPES.map((nt) => (
+            {visibleNodeTypes.map((nt) => (
               <div key={nt.type} className="flex items-center gap-2.5 p-2.5 bg-surface-card border border-border-dim rounded-lg cursor-grab mb-1.5 transition-all hover:border-accent hover:bg-accent-light active:cursor-grabbing" draggable onDragStart={(e) => onDragStart(e, nt.type)}>
                 <span className="text-lg w-7 text-center">{nt.icon}</span>
                 <div className="flex flex-col">
@@ -56,7 +74,17 @@ export function Sidebar() {
                 ) : (
                   <span className="flex-1 cursor-pointer text-xs font-medium truncate text-gray-700" onClick={() => selectWorkflow(wf.id)} onDoubleClick={() => startRename(wf.id, wf.name)}>{wf.name}</span>
                 )}
-                <button className="workflow-delete bg-transparent border-none text-gray-400 text-base cursor-pointer px-1 leading-none opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-500" onClick={(e) => { e.stopPropagation(); deleteWorkflow(wf.id); }}>&times;</button>
+                <button
+                  className="bg-transparent border-none text-gray-400 cursor-pointer px-1 leading-none opacity-0 group-hover:opacity-100 transition-opacity hover:text-accent"
+                  title="Duplicate"
+                  onClick={(e) => { e.stopPropagation(); duplicateWorkflow(wf.id); }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                </button>
+                <button className="workflow-delete bg-transparent border-none text-gray-400 text-base cursor-pointer px-1 leading-none opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-500" title="Delete" onClick={(e) => { e.stopPropagation(); deleteWorkflow(wf.id); }}>&times;</button>
               </div>
             ))}
             {workflows.length === 0 && <p className="text-gray-400 text-[11px] text-center py-4">No workflows yet</p>}

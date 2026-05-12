@@ -23,6 +23,8 @@ export interface Generation {
 export interface ModelOption {
   id: string;
   name: string;
+  /** Which upstream the request is routed to. Used by the UI to decide which provider-specific options (e.g. OpenAI's `quality`) to show. */
+  provider?: "openrouter" | "openai";
 }
 
 export interface PromptNodeData {
@@ -36,6 +38,8 @@ export interface GenerateNodeData {
   model: string;
   aspectRatio: string;
   imageSize: string;
+  /** Quality hint — currently only honored when routing to OpenAI direct. */
+  quality?: "auto" | "low" | "medium" | "high";
   status: "idle" | "running" | "success" | "error";
   imageUrl?: string;
   error?: string;
@@ -64,6 +68,15 @@ export interface AnalyzeNodeData {
   error?: string;
 }
 
+export interface UpscaleNodeData {
+  label: string;
+  upscaleFactor: number;
+  outputFormat: "jpg" | "png" | "webp";
+  status: "idle" | "running" | "success" | "error";
+  imageUrl?: string;
+  error?: string;
+}
+
 export interface RefineNodeData {
   label: string;
   tilePrompts: string[];
@@ -84,4 +97,5 @@ export type FlowNodeData =
   | ImageInputNodeData
   | OutputNodeData
   | AnalyzeNodeData
-  | RefineNodeData;
+  | RefineNodeData
+  | UpscaleNodeData;

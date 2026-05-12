@@ -2,6 +2,12 @@ import { createContext, useContext } from "react";
 import type { Workflow, ModelOption, Generation } from "./types";
 import type { Node, Edge, Viewport } from "@xyflow/react";
 
+export interface Features {
+  openrouter: boolean;
+  openai: boolean;
+  fal: boolean;
+}
+
 export interface LeafResult {
   nodeId: string;
   label: string;
@@ -19,6 +25,7 @@ export interface WorkflowContextValue {
   selectWorkflow: (id: number) => Promise<void>;
   deleteWorkflow: (id: number) => Promise<void>;
   renameWorkflow: (id: number, name: string) => Promise<void>;
+  duplicateWorkflow: (id: number) => Promise<void>;
 
   // Flow state
   nodes: Node[];
@@ -43,8 +50,12 @@ export interface WorkflowContextValue {
   // Models
   models: ModelOption[];
 
+  // Which providers/features are available based on configured env keys.
+  features: Features;
+
   // Generations
   generations: Generation[];
+  refreshGenerations: () => Promise<void>;
 
   // Agent mode
   isAgent: boolean;

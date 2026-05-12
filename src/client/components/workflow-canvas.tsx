@@ -14,6 +14,7 @@ import { ImageInputNode } from "./nodes/image-input-node";
 import { OutputNode } from "./nodes/output-node";
 import { AnalyzeNode } from "./nodes/analyze-node";
 import { RefineNode } from "./nodes/refine-node";
+import { UpscaleNode } from "./nodes/upscale-node";
 
 export function WorkflowCanvas() {
   const {
@@ -28,6 +29,7 @@ export function WorkflowCanvas() {
       output: OutputNode as any,
       analyze: AnalyzeNode as any,
       refine: RefineNode as any,
+      upscale: UpscaleNode as any,
     }),
     []
   );
