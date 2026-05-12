@@ -2,6 +2,15 @@ import { createContext, useContext } from "react";
 import type { Workflow, ModelOption, Generation } from "./types";
 import type { Node, Edge, Viewport } from "@xyflow/react";
 
+export interface LeafResult {
+  nodeId: string;
+  label: string;
+  type: string;
+  imageUrl?: string;
+  imageUrls?: string[];
+  text?: string;
+}
+
 export interface WorkflowContextValue {
   // Workflow list
   workflows: Workflow[];
@@ -26,6 +35,10 @@ export interface WorkflowContextValue {
   executeWorkflow: () => Promise<void>;
   runNode: (nodeId: string) => Promise<void>;
   executing: boolean;
+
+  /** Outputs from the most recent execution — one entry per leaf node (no outgoing edges). */
+  lastRunResults: LeafResult[];
+  setLastRunResults: (r: LeafResult[]) => void;
 
   // Models
   models: ModelOption[];

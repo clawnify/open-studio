@@ -1,4 +1,6 @@
+import { useEffect, useRef, useState } from "react";
 import { useWorkflow } from "../context";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface Props {
   workflowView: "canvas" | "outputs";
@@ -6,7 +8,16 @@ interface Props {
 }
 
 export function Toolbar({ workflowView, onWorkflowViewChange }: Props) {
-  const { activeWorkflow, saveWorkflow, executeWorkflow, executing } = useWorkflow();
+  const { activeWorkflow, saveWorkflow, executeWorkflow, executing, lastRunResults } = useWorkflow();
+  const [showResults, setShowResults] = useState(false);
+  // Auto-open the popover when a run finishes with results.
+  const wasExecutingRef = useRef(executing);
+  useEffect(() => {
+    if (wasExecutingRef.current && !executing && lastRunResults.length > 0) {
+      setShowResults(true);
+    }
+    wasExecutingRef.current = executing;
+  }, [executing, lastRunResults.length]);
 
   const tabClass = (active: boolean) =>
     `px-3 py-1.5 text-xs font-semibold cursor-pointer transition-all ${
@@ -43,7 +54,47 @@ export function Toolbar({ workflowView, onWorkflowViewChange }: Props) {
         >
           {executing ? (<><span className="spinner !border-white/30 !border-t-white" /> Running...</>) : "▶ Execute"}
         </button>
+        {lastRunResults.length > 0 && (
+          <button
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-border-dim cursor-pointer bg-white text-gray-700 hover:bg-surface-card"
+            onClick={() => setShowResults(true)}
+            title="Reopen the most recent run's results"
+          >
+            Last run ({lastRunResults.length})
+          </button>
+        )}
       </div>
+
+      <Dialog open={showResults} onOpenChange={setShowResults}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Last run · {lastRunResults.length} output{lastRunResults.length === 1 ? "" : "s"}</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+            {lastRunResults.map((r) => (
+              <div key={r.nodeId} className="border border-border-dim rounded-lg p-3 bg-surface-card">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-gray-700">{r.label}</span>
+                  <span className="text-[10px] text-gray-400 uppercase tracking-wide">{r.type}</span>
+                </div>
+                {r.imageUrl && (
+                  <img className="block w-full rounded border border-border-dim mb-2" src={r.imageUrl} alt={r.label} />
+                )}
+                {r.imageUrls && r.imageUrls.length > 0 && (
+                  <div className="grid grid-cols-2 gap-1 mb-2">
+                    {r.imageUrls.map((u, i) => (
+                      <img key={i} className="block w-full aspect-square object-cover rounded border border-border-dim" src={u} alt={`${r.label} ${i + 1}`} />
+                    ))}
+                  </div>
+                )}
+                {r.text && (
+                  <pre className="text-[11px] p-2 rounded bg-white border border-border-dim text-gray-700 max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">{r.text}</pre>
+                )}
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

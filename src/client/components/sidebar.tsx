@@ -7,7 +7,6 @@ const NODE_TYPES = [
   { type: "imageInput", icon: "\uD83D\uDCF7", label: "Image Input", desc: "Reference image URL" },
   { type: "analyze", icon: "\uD83D\uDD0E", label: "Analyze", desc: "Vision \u2192 text/JSON" },
   { type: "refine", icon: "\u2737", label: "Refine", desc: "Tile-based image refinement" },
-  { type: "output", icon: "\uD83C\uDFA8", label: "Output", desc: "Display results" },
 ];
 
 export function Sidebar() {

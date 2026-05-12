@@ -276,7 +276,11 @@ app.openapi(generateImage, async (c) => {
       return c.json({ error: `OpenRouter error: ${err}` }, 500);
     }
 
-    const data = (await response.json()) as {
+    // Read as text so we can surface the actual response when it isn't valid
+    // JSON (CF gateway timeout, partial body, etc.) — `response.json()` would
+    // throw a bare SyntaxError here that's useless for debugging.
+    const rawText = await response.text();
+    let data: {
       choices?: Array<{
         message?: {
           content?: string;
@@ -284,6 +288,13 @@ app.openapi(generateImage, async (c) => {
         };
       }>;
     };
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      return c.json({
+        error: `OpenRouter returned non-JSON (status ${response.status}, ${rawText.length} bytes): ${rawText.slice(0, 400)}`,
+      }, 500);
+    }
 
     const message = data.choices?.[0]?.message;
 
@@ -460,7 +471,13 @@ async function runAnalyze(
     const err = await response.text();
     throw new Error(`OpenRouter error: ${err}`);
   }
-  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const rawText = await response.text();
+  let data: { choices?: Array<{ message?: { content?: string } }> };
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error(`OpenRouter returned non-JSON (status ${response.status}, ${rawText.length} bytes): ${rawText.slice(0, 400)}`);
+  }
   let text = data.choices?.[0]?.message?.content?.trim() || "";
   if (outputFormat === "json") {
     // Strip code fences if the model added them despite our instruction.
@@ -908,11 +925,14 @@ publicApp.openapi(executeWorkflow, async (c) => {
     await Promise.allSettled(level.map((nid) => limiter.run(() => executeNode(nid))));
   }
 
-  // Return output nodes as the primary result
-  const outputNodes = results.filter((r) => r.type === "output");
+  // Treat any node with no outgoing edges as a workflow output (leaf). This
+  // makes the dedicated Output node optional — wiring up to a leaf is the
+  // implicit "this is what I want back" signal.
+  const hasOutgoing = new Set(edges.map((e) => e.source));
+  const leafResults = results.filter((r) => !hasOutgoing.has(r.node_id));
   return c.json({
     workflow_id: wf.id,
-    outputs: outputNodes.map((r) => r.output),
+    outputs: leafResults.map((r) => ({ node_id: r.node_id, label: r.label, type: r.type, ...r.output })),
     all_nodes: results,
   }, 200);
 });

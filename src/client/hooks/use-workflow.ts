@@ -9,7 +9,7 @@ import {
 } from "@xyflow/react";
 import { api } from "../api";
 import type { Workflow, ModelOption, Generation } from "../types";
-import type { WorkflowContextValue } from "../context";
+import type { WorkflowContextValue, LeafResult } from "../context";
 
 let nodeIdCounter = 0;
 function nextNodeId() {
@@ -75,6 +75,7 @@ export function useWorkflowState(): WorkflowContextValue {
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<Edge>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [generations, setGenerations] = useState<Generation[]>([]);
+  const [lastRunResults, setLastRunResults] = useState<LeafResult[]>([]);
   const [executing, setExecuting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -590,6 +591,26 @@ export function useWorkflowState(): WorkflowContextValue {
         await Promise.allSettled(level.map((nid) => executeNode(nid, nodeMap, edges, outputs)));
       }
 
+      // Leaves = nodes with no outgoing edges. Treat them as the workflow's
+      // "outputs" — Output node becomes optional.
+      const hasOutgoing = new Set(edges.map((e) => e.source));
+      const leaves: LeafResult[] = [];
+      for (const n of nodes) {
+        if (hasOutgoing.has(n.id)) continue;
+        const out = outputs.get(n.id);
+        if (!out) continue;
+        if (!out.imageUrl && !out.text && !(out.imageUrls && out.imageUrls.length)) continue;
+        leaves.push({
+          nodeId: n.id,
+          label: ((n.data as Record<string, unknown>).label as string) || n.id,
+          type: n.type || "",
+          imageUrl: out.imageUrl,
+          imageUrls: out.imageUrls,
+          text: out.text,
+        });
+      }
+      setLastRunResults(leaves);
+
       await saveWorkflow();
 
       if (activeIdRef.current) {
@@ -671,6 +692,8 @@ export function useWorkflowState(): WorkflowContextValue {
     executeWorkflow,
     runNode,
     executing,
+    lastRunResults,
+    setLastRunResults,
     models,
     generations,
     isAgent,
