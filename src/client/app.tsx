@@ -59,7 +59,7 @@ export function App() {
               <div className="flex-1 flex flex-col min-w-0">
                 <Toolbar workflowView={workflowView} onWorkflowViewChange={setWorkflowView} />
                 <ErrorBanner />
-                {workflowView === "canvas" ? <WorkflowCanvas /> : <WorkflowOutputs />}
+                {workflowView === "canvas" ? <WorkflowCanvas /> : <WorkflowOutputs onLoaded={() => setWorkflowView("canvas")} />}
               </div>
             </div>
           )}

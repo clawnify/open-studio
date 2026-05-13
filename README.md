@@ -65,12 +65,12 @@ Append `?agent=true` to the URL for an agent-friendly UI with always-visible del
 ## Architecture
 
 ```
+schema.sql    — Canonical database schema (workflows, generations)
 src/
   server/
     index.ts    — Hono API with D1 middleware
     db.ts       — D1-native database adapter
     uploads.ts  — R2 file storage adapter
-    schema.sql  — Database schema (workflows, generations)
   client/
     app.tsx           — Root component with Generate/Workflows tabs
     context.tsx       — Preact context for workflow state
@@ -87,6 +87,14 @@ src/
         image-input-node.tsx  — Reference image upload node
         output-node.tsx       — Result display node
 ```
+
+### Schema & Migrations
+
+`schema.sql` at the project root is the canonical database schema for fresh deployments. Edit it directly to add tables, columns, or indexes — this is the file maintainers own.
+
+On a fresh deploy, Clawnify applies `schema.sql` to an empty D1 once and records a baseline hash in the deployed instance's tracking table. From then on, the deployed instance evolves via auto-generated migration files (Clawnify's app-builder agent authors them when the user asks for schema changes). Existing deployed instances are not retroactively migrated when this file changes — only new deploys pick up the updated baseline.
+
+Inside a deployed instance, `schema.sql` becomes an auto-regenerated snapshot of the live D1 — do not hand-edit it there. In this template repo, you do edit it directly.
 
 ### API Endpoints
 

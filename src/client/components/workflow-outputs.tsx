@@ -1,17 +1,28 @@
 import { useEffect, useState } from "react";
 import { useWorkflow } from "../context";
-import { EditImageDialog } from "./edit-image-dialog";
+import { FeedbackDialog } from "./feedback-dialog";
+import type { Generation } from "../types";
 
-export function WorkflowOutputs() {
-  const { generations, activeWorkflow, refreshGenerations, features } = useWorkflow();
+interface Props {
+  onLoaded?: () => void;
+}
+
+export function WorkflowOutputs({ onLoaded }: Props = {}) {
+  const { generations, activeWorkflow, refreshGenerations, loadRun } = useWorkflow();
+  const [selected, setSelected] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [feedbackTarget, setFeedbackTarget] = useState<Generation | null>(null);
+
+  const loadIntoCanvas = async (runId: number) => {
+    await loadRun(runId);
+    onLoaded?.();
+  };
+
   // Refresh on view open / workflow switch so the grid is always current
   // without forcing the user to reload the page.
   useEffect(() => {
     refreshGenerations();
   }, [refreshGenerations, activeWorkflow?.id]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [copiedId, setCopiedId] = useState<number | null>(null);
-  const [editingUrl, setEditingUrl] = useState<string | null>(null);
 
   const copyPrompt = async (id: number, prompt: string) => {
     try {
@@ -60,15 +71,26 @@ export function WorkflowOutputs() {
                     className="w-full h-full object-cover"
                   />
                 </button>
-                {features.openai && (
-                  <button
-                    className="absolute top-1.5 right-1.5 text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer transition-opacity opacity-0 group-hover:opacity-100"
-                    onClick={(e) => { e.stopPropagation(); setEditingUrl(gen.image_url); }}
-                    title="Mask-edit this image"
-                  >
-                    ✎ Edit
-                  </button>
-                )}
+                <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {gen.run_id && (
+                    <>
+                      <button
+                        className="text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer"
+                        onClick={(e) => { e.stopPropagation(); loadIntoCanvas(gen.run_id!); }}
+                        title="Load the workflow state from this run into the canvas"
+                      >
+                        ↺ Load
+                      </button>
+                      <button
+                        className="text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer"
+                        onClick={(e) => { e.stopPropagation(); setFeedbackTarget(gen); }}
+                        title="Iterate on this output by adding prompt feedback and re-running"
+                      >
+                        💬 Feedback
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="aspect-square flex items-center justify-center text-red-500 text-xs px-3 text-center">
@@ -103,29 +125,20 @@ export function WorkflowOutputs() {
           className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center cursor-pointer"
           onClick={() => setSelected(null)}
         >
-          <div className="relative" onClick={(e) => e.stopPropagation()}>
-            <img
-              className="max-w-[90vw] max-h-[90vh] object-contain cursor-default shadow-2xl"
-              src={selected}
-              alt="Full size"
-            />
-            {features.openai && (
-              <button
-                className="absolute top-2 right-2 text-xs text-white bg-black/70 hover:bg-black/90 border-none rounded px-2 py-1 cursor-pointer"
-                onClick={() => { setEditingUrl(selected); setSelected(null); }}
-              >
-                ✎ Edit
-              </button>
-            )}
-          </div>
+          <img
+            className="max-w-[90vw] max-h-[90vh] object-contain cursor-default shadow-2xl"
+            src={selected}
+            alt="Full size"
+            onClick={(e) => e.stopPropagation()}
+          />
         </div>
       )}
 
-      <EditImageDialog
-        open={editingUrl !== null}
-        onOpenChange={(o) => { if (!o) setEditingUrl(null); }}
-        sourceUrl={editingUrl || ""}
-        onResult={() => refreshGenerations()}
+      <FeedbackDialog
+        open={feedbackTarget !== null}
+        onOpenChange={(o) => { if (!o) setFeedbackTarget(null); }}
+        generation={feedbackTarget}
+        onSubmitted={() => { setFeedbackTarget(null); onLoaded?.(); }}
       />
     </div>
   );

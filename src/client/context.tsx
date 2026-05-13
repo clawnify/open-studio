@@ -56,6 +56,14 @@ export interface WorkflowContextValue {
   // Generations
   generations: Generation[];
   refreshGenerations: () => Promise<void>;
+  /** Load a workflow_runs snapshot into the canvas — does not auto-save. */
+  loadRun: (runId: number) => Promise<void>;
+  /**
+   * Load a past run, apply feedback text to the named GenerateImage node, and
+   * re-run only that node against the loaded snapshot. Used by the Outputs
+   * section's Feedback flow.
+   */
+  runOutputFeedback: (runId: number, nodeId: string, feedback: string) => Promise<void>;
 
   // Agent mode
   isAgent: boolean;

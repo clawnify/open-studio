@@ -8,7 +8,7 @@ import {
   type Connection,
 } from "@xyflow/react";
 import { api } from "../api";
-import type { Workflow, ModelOption, Generation } from "../types";
+import type { Workflow, ModelOption, Generation, WorkflowRun } from "../types";
 import type { WorkflowContextValue, LeafResult, Features } from "../context";
 
 let nodeIdCounter = 0;
@@ -82,6 +82,9 @@ export function useWorkflowState(): WorkflowContextValue {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const activeIdRef = useRef<number | null>(null);
+  // Set by executeWorkflow so per-node /api/generations saves can tag the
+  // run they belong to. Null outside a full-workflow execute.
+  const currentRunIdRef = useRef<number | null>(null);
 
   // ── Undo / Redo ──────────────────────────────────────────────────
   const undoStack = useRef<HistoryEntry[]>([]);
@@ -235,6 +238,28 @@ export function useWorkflowState(): WorkflowContextValue {
     }
   }, []);
 
+  /**
+   * Load a previously-captured run snapshot into the canvas. Replaces the
+   * in-memory nodes/edges; does NOT touch the persisted workflow row until
+   * the user hits Save. Click a generation in the Outputs grid → this fires.
+   */
+  const loadRun = useCallback(async (runId: number) => {
+    try {
+      const r = await api<WorkflowRun>("GET", `/api/runs/${runId}`);
+      if (!r.snapshot) {
+        setError("This run wasn't completed — no snapshot to load.");
+        return;
+      }
+      const parsed = JSON.parse(r.snapshot) as { nodes: Node[]; edges: Edge[]; viewport?: { x: number; y: number; zoom: number } };
+      isUndoRedoRef.current = true;
+      setNodes(parsed.nodes);
+      setEdges(parsed.edges);
+      requestAnimationFrame(() => { isUndoRedoRef.current = false; });
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [setNodes, setEdges]);
+
   const refreshGenerations = useCallback(async () => {
     if (!activeIdRef.current) return;
     try {
@@ -364,6 +389,7 @@ export function useWorkflowState(): WorkflowContextValue {
     nodeMap: Map<string, Node>,
     allEdges: Edge[],
     outputs: ExecOutputs,
+    erroredNodes?: Set<string>,
   ) => {
         const node = nodeMap.get(nodeId);
         if (!node) return;
@@ -410,7 +436,11 @@ export function useWorkflowState(): WorkflowContextValue {
             break;
           }
           case "generateImage": {
-            const prompt = inputText || inputPromptText || "A beautiful image";
+            const basePrompt = inputText || inputPromptText || "A beautiful image";
+            const feedback = ((data.feedback as string) || "").trim();
+            const prompt = feedback
+              ? `${basePrompt}\n\nAdditional feedback (apply these changes): ${feedback}`
+              : basePrompt;
             const model = (data.model as string) || "google/gemini-3.1-flash-image-preview";
             const aspectRatio = (data.aspectRatio as string) || "1:1";
             const imageSize = (data.imageSize as string) || "1K";
@@ -439,10 +469,12 @@ export function useWorkflowState(): WorkflowContextValue {
                 model,
                 image_url: img?.url || null,
                 status: "success",
+                run_id: currentRunIdRef.current,
               });
             } catch (e) {
               const errMsg = String(e);
               updateNodeData(nodeId, { status: "error", error: errMsg });
+              erroredNodes?.add(nodeId);
               outputs.set(nodeId, { promptText: prompt });
 
               await api("POST", "/api/generations", {
@@ -453,16 +485,31 @@ export function useWorkflowState(): WorkflowContextValue {
                 image_url: null,
                 status: "error",
                 error: errMsg,
+                run_id: currentRunIdRef.current,
               });
             }
             break;
           }
           case "analyze": {
-            const analyzePrompt = (data.prompt as string) || inputText || inputPromptText || "Describe this image.";
+            // Resolve {{nodeId}} pill references in the instruction same way
+            // the prompt case does — prefer already-computed outputs, fall
+            // back to raw node data.
+            const rawAnalyzePrompt = (data.prompt as string) || "";
+            const resolvedAnalyzePrompt = rawAnalyzePrompt.replace(/\{\{(.+?)\}\}/g, (_match, refId: string) => {
+              const cleanId = refId.trim();
+              const resolved = outputs.get(cleanId);
+              if (resolved?.text) return resolved.text;
+              const ref = nodeMap.get(cleanId);
+              if (!ref) return _match;
+              const refData = ref.data as Record<string, unknown>;
+              return (refData.text as string) || (refData.result as string) || "";
+            });
+            const analyzePrompt = resolvedAnalyzePrompt || inputText || inputPromptText || "Describe this image.";
             const analyzeModel = (data.model as string) || "google/gemini-2.5-flash";
             const outputFormat = ((data.outputFormat as string) === "json" ? "json" : "text") as "json" | "text";
             if (inputImages.length === 0) {
               updateNodeData(nodeId, { status: "error", error: "No input image" });
+              erroredNodes?.add(nodeId);
               outputs.set(nodeId, { text: "" });
               break;
             }
@@ -478,6 +525,7 @@ export function useWorkflowState(): WorkflowContextValue {
             } catch (e) {
               const errMsg = String(e);
               updateNodeData(nodeId, { status: "error", error: errMsg });
+              erroredNodes?.add(nodeId);
               outputs.set(nodeId, { text: "" });
             }
             break;
@@ -501,6 +549,7 @@ export function useWorkflowState(): WorkflowContextValue {
             const sourceUrl = sourceEdge ? outputs.get(sourceEdge.source)?.imageUrl : undefined;
             if (!sourceNode || !sourceUrl) {
               updateNodeData(nodeId, { status: "error", error: "Connect a Generate Image to the 'image' input." });
+              erroredNodes?.add(nodeId);
               outputs.set(nodeId, {});
               break;
             }
@@ -561,6 +610,7 @@ export function useWorkflowState(): WorkflowContextValue {
             } catch (e) {
               const errMsg = String(e);
               updateNodeData(nodeId, { status: "error", error: errMsg });
+              erroredNodes?.add(nodeId);
               outputs.set(nodeId, {});
             }
             break;
@@ -569,6 +619,7 @@ export function useWorkflowState(): WorkflowContextValue {
             const sourceUrl = inputImages[0];
             if (!sourceUrl) {
               updateNodeData(nodeId, { status: "error", error: "Connect an image source." });
+              erroredNodes?.add(nodeId);
               outputs.set(nodeId, {});
               break;
             }
@@ -586,6 +637,7 @@ export function useWorkflowState(): WorkflowContextValue {
             } catch (e) {
               const errMsg = String(e);
               updateNodeData(nodeId, { status: "error", error: errMsg });
+              erroredNodes?.add(nodeId);
               outputs.set(nodeId, {});
             }
             break;
@@ -607,6 +659,18 @@ export function useWorkflowState(): WorkflowContextValue {
     setExecuting(true);
     setError(null);
 
+    // Create a run record up front so each generation we save during execute
+    // can link to it via run_id. The final snapshot is written when execute
+    // finishes (success or failure).
+    let runRow: WorkflowRun | null = null;
+    try {
+      runRow = await api<WorkflowRun>("POST", "/api/runs", { workflow_id: activeIdRef.current });
+      currentRunIdRef.current = runRow.id;
+    } catch {
+      // If run creation fails we still proceed — generations just won't be
+      // grouped. Surface no error to keep the execute resilient.
+    }
+
     try {
       // Topological sort
       const nodeMap = new Map(nodes.map((n) => [n.id, n]));
@@ -621,8 +685,13 @@ export function useWorkflowState(): WorkflowContextValue {
       // Real edges + virtual edges from {{nodeId}} pill references inside prompt text.
       const allDeps: Array<{ source: string; target: string }> = edges.map((e) => ({ source: e.source, target: e.target }));
       for (const n of nodes) {
-        if (n.type !== "prompt") continue;
-        const text = ((n.data as Record<string, unknown>).text as string) || "";
+        // Both prompt and analyze nodes use {{nodeId}} pill references — give
+        // each its own field name and infer a dependency edge so they
+        // topo-sort correctly.
+        let text = "";
+        if (n.type === "prompt") text = ((n.data as Record<string, unknown>).text as string) || "";
+        else if (n.type === "analyze") text = ((n.data as Record<string, unknown>).prompt as string) || "";
+        else continue;
         for (const m of text.matchAll(/\{\{(.+?)\}\}/g)) {
           const refId = m[1].trim();
           if (refId === n.id || !nodeMap.has(refId)) continue;
@@ -652,8 +721,17 @@ export function useWorkflowState(): WorkflowContextValue {
       }
 
       const outputs: ExecOutputs = new Map();
+      // Stop-on-error: parallel siblings in a level still finish, but if any
+      // node errored we don't kick off the next level. Downstream nodes would
+      // mostly receive empty inputs and either fail or produce nonsense, so
+      // halting is the cheaper + clearer behavior.
+      const erroredNodes = new Set<string>();
       for (const level of levels) {
-        await Promise.allSettled(level.map((nid) => executeNode(nid, nodeMap, edges, outputs)));
+        await Promise.allSettled(level.map((nid) => executeNode(nid, nodeMap, edges, outputs, erroredNodes)));
+        if (erroredNodes.size > 0) {
+          setError(`Stopped: ${erroredNodes.size} node(s) errored. Fix the failing node and re-run.`);
+          break;
+        }
       }
 
       // Leaves = nodes with no outgoing edges. Treat them as the workflow's
@@ -678,13 +756,47 @@ export function useWorkflowState(): WorkflowContextValue {
 
       await saveWorkflow();
 
+      // Persist the run snapshot — synthesize the node array with runtime
+      // fields applied from the outputs map (state's `nodes` may not yet
+      // reflect setNodes calls from this execute by the time we run here).
+      if (runRow) {
+        const snapshotNodes = nodes.map((n) => {
+          const out = outputs.get(n.id);
+          const data = { ...(n.data as Record<string, unknown>) };
+          if (out) {
+            if (n.type === "generateImage") {
+              if (out.imageUrl) { data.imageUrl = out.imageUrl; data.status = "success"; }
+              if (out.promptText) data.lastPrompt = out.promptText;
+            } else if (n.type === "analyze" && out.text !== undefined) {
+              data.result = out.text; data.status = "success";
+            } else if (n.type === "refine" && out.imageUrls) {
+              data.imageUrls = out.imageUrls; data.status = "success";
+            } else if (n.type === "upscale" && out.imageUrl) {
+              data.imageUrl = out.imageUrl; data.status = "success";
+            } else if (n.type === "output") {
+              if (out.imageUrl) data.imageUrl = out.imageUrl;
+              if (out.text) data.text = out.text;
+            }
+          }
+          return { ...n, data };
+        });
+        const snapshot = JSON.stringify({ nodes: snapshotNodes, edges, viewport: { x: 0, y: 0, zoom: 1 } });
+        try {
+          await api("PUT", `/api/runs/${runRow.id}`, { snapshot, status: "completed" });
+        } catch {/* non-fatal */}
+      }
+
       if (activeIdRef.current) {
         const gens = await api<Generation[]>("GET", `/api/generations/${activeIdRef.current}`);
         setGenerations(gens);
       }
     } catch (e) {
       setError(String(e));
+      if (runRow) {
+        try { await api("PUT", `/api/runs/${runRow.id}`, { status: "error" }); } catch {}
+      }
     } finally {
+      currentRunIdRef.current = null;
       setExecuting(false);
     }
   }, [nodes, edges, executing, executeNode, saveWorkflow]);
@@ -756,6 +868,77 @@ export function useWorkflowState(): WorkflowContextValue {
     }
   }, [nodes, edges, executing, executeNode]);
 
+  /**
+   * Load a past run snapshot, apply a `feedback` string to the GenerateImage
+   * node, and re-run only that node against the snapshot. Used by the
+   * Outputs section's Feedback flow to iterate on past generations without
+   * affecting the live workflow until the user hits Save.
+   */
+  const runOutputFeedback = useCallback(async (
+    runId: number,
+    nodeId: string,
+    feedback: string,
+  ) => {
+    if (!activeIdRef.current || executing) return;
+    setExecuting(true);
+    setError(null);
+
+    try {
+      const r = await api<WorkflowRun>("GET", `/api/runs/${runId}`);
+      if (!r.snapshot) throw new Error("This run has no snapshot to load.");
+      const parsed = JSON.parse(r.snapshot) as { nodes: Node[]; edges: Edge[]; viewport?: { x: number; y: number; zoom: number } };
+
+      const patchedNodes = parsed.nodes.map((n) =>
+        n.id === nodeId ? { ...n, data: { ...(n.data as Record<string, unknown>), feedback } } : n,
+      );
+
+      isUndoRedoRef.current = true;
+      setNodes(patchedNodes);
+      setEdges(parsed.edges);
+      requestAnimationFrame(() => { isUndoRedoRef.current = false; });
+
+      const nodeMap = new Map(patchedNodes.map((n) => [n.id, n]));
+      const outputs: ExecOutputs = new Map();
+      const incoming = parsed.edges.filter((e) => e.target === nodeId);
+      const resolvePromptText = (id: string, depth: number): string => {
+        if (depth > 12) return "";
+        const n = nodeMap.get(id);
+        if (!n) return "";
+        const nd = n.data as Record<string, unknown>;
+        if (n.type === "analyze") return (nd.result as string) || "";
+        if (n.type !== "prompt") return (nd.text as string) || "";
+        const raw = (nd.text as string) || "";
+        return raw.replace(/\{\{(.+?)\}\}/g, (_m, ref: string) => resolvePromptText(ref.trim(), depth + 1));
+      };
+      for (const edge of incoming) {
+        const src = nodeMap.get(edge.source);
+        if (!src) continue;
+        const d = src.data as Record<string, unknown>;
+        const out: { text?: string; promptText?: string; imageUrl?: string; imageUrls?: string[] } = {};
+        const txt = src.type === "prompt" ? resolvePromptText(edge.source, 0) : ((d.text as string) || (d.result as string));
+        if (txt) out.text = txt;
+        const img = d.imageUrl as string;
+        if (img) out.imageUrl = img;
+        const imgs = d.imageUrls as string[] | undefined;
+        if (imgs && imgs.length) out.imageUrls = imgs;
+        const lastPrompt = d.lastPrompt as string;
+        if (lastPrompt && !out.text) out.promptText = lastPrompt;
+        outputs.set(edge.source, out);
+      }
+
+      await executeNode(nodeId, nodeMap, parsed.edges, outputs);
+
+      if (activeIdRef.current) {
+        const gens = await api<Generation[]>("GET", `/api/generations/${activeIdRef.current}`);
+        setGenerations(gens);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setExecuting(false);
+    }
+  }, [executing, executeNode, setNodes, setEdges]);
+
   const clearError = useCallback(() => setError(null), []);
 
   return {
@@ -784,6 +967,8 @@ export function useWorkflowState(): WorkflowContextValue {
     features,
     generations,
     refreshGenerations,
+    loadRun,
+    runOutputFeedback,
     isAgent,
     loading,
     error,

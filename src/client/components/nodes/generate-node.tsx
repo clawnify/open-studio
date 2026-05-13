@@ -3,15 +3,13 @@ import { Handle, Position } from "@xyflow/react";
 import { useWorkflow } from "../../context";
 import { NodeHeader } from "./node-header";
 import { NodeToolbar } from "./node-toolbar";
-import { EditImageDialog } from "../edit-image-dialog";
 import type { GenerateNodeData } from "../../types";
 
 interface Props { id: string; data: GenerateNodeData; }
 
 export function GenerateNode({ id, data }: Props) {
-  const { updateNodeData, models, features } = useWorkflow();
+  const { updateNodeData, models } = useWorkflow();
   const [copied, setCopied] = useState(false);
-  const [editing, setEditing] = useState(false);
   const selectClass = "w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs py-1 px-2 outline-none cursor-pointer appearance-none focus:border-accent";
 
   const copyPrompt = async (e: { stopPropagation: () => void; preventDefault: () => void }) => {
@@ -69,39 +67,19 @@ export function GenerateNode({ id, data }: Props) {
         {data.imageUrl && (
           <div className="nodrag relative rounded overflow-hidden border border-border-dim mt-1">
             <img className="block w-full max-h-[180px] object-cover" src={data.imageUrl} alt="Generated" />
-            <div className="absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              {features.openai && (
-                <button
-                  className="nodrag text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); setEditing(true); }}
-                  title="Mask-edit this image (requires OPENAI_API_KEY)"
-                >
-                  ✎ Edit
-                </button>
-              )}
-              {data.lastPrompt && (
-                <button
-                  className="nodrag text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={copyPrompt}
-                  title="Copy prompt sent to model"
-                >
-                  {copied ? "✓ Copied" : "⧉ Copy prompt"}
-                </button>
-              )}
-            </div>
+            {data.lastPrompt && (
+              <button
+                className="nodrag absolute bottom-1.5 right-1.5 text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer transition-opacity opacity-0 group-hover:opacity-100"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={copyPrompt}
+                title="Copy prompt sent to model"
+              >
+                {copied ? "✓ Copied" : "⧉ Copy prompt"}
+              </button>
+            )}
           </div>
         )}
       </div>
-      {data.imageUrl && (
-        <EditImageDialog
-          open={editing}
-          onOpenChange={setEditing}
-          sourceUrl={data.imageUrl}
-          onResult={(url) => updateNodeData(id, { imageUrl: url })}
-        />
-      )}
       <Handle type="target" position={Position.Left} className="!bg-accent" id="prompt" />
       <Handle type="source" position={Position.Right} className="!bg-emerald-500" />
     </div>

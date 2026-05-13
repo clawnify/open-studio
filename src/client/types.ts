@@ -17,7 +17,17 @@ export interface Generation {
   image_url: string | null;
   status: string;
   error: string | null;
+  run_id: number | null;
   created_at: string;
+}
+
+export interface WorkflowRun {
+  id: number;
+  workflow_id: number;
+  snapshot: string | null;
+  status: string;
+  created_at: string;
+  completed_at: string | null;
 }
 
 export interface ModelOption {
@@ -40,6 +50,12 @@ export interface GenerateNodeData {
   imageSize: string;
   /** Quality hint — currently only honored when routing to OpenAI direct. */
   quality?: "auto" | "low" | "medium" | "high";
+  /**
+   * Free-form text appended to the prompt at execute time as "Additional
+   * feedback: …". Set by the Feedback flow when a user iterates on a past
+   * generation from the Outputs section.
+   */
+  feedback?: string;
   status: "idle" | "running" | "success" | "error";
   imageUrl?: string;
   error?: string;

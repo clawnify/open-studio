@@ -1,0 +1,53 @@
+-- Canonical schema for fresh deployments of open-studio.
+-- Applied once to an empty D1 on first provision. After deployment, the
+-- agent appends migrations and this file is auto-regenerated from the
+-- live D1 by Clawnify's build pipeline.
+--
+-- Maintainers: edit this file directly to evolve the schema for new
+-- deployments. Never add migration files in this repo — those are
+-- instance-only.
+--
+-- IF NOT EXISTS is retained for local-dev idempotence (`pnpm dev` re-applies
+-- this file on every startup against the local --local D1). In production
+-- the cloud pipeline applies this against an empty D1 once and switches
+-- to migration-tracked deploys; the clauses are harmless either way.
+--
+-- The inline runtime migration in src/server/index.ts still applies the
+-- same schema defensively on every cold start. Once the new migration
+-- system is fully verified, that inline block can be removed.
+
+CREATE TABLE IF NOT EXISTS workflows (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL DEFAULT 'Untitled Workflow',
+  nodes       TEXT NOT NULL DEFAULT '[]',
+  edges       TEXT NOT NULL DEFAULT '[]',
+  viewport    TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS generations (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id  INTEGER NOT NULL DEFAULT 0,
+  node_id      TEXT NOT NULL,
+  prompt       TEXT NOT NULL,
+  model        TEXT NOT NULL,
+  image_url    TEXT,
+  status       TEXT NOT NULL DEFAULT 'pending',
+  error        TEXT,
+  run_id       INTEGER,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id   INTEGER NOT NULL,
+  snapshot      TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_generations_workflow ON generations(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_generations_run ON generations(run_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);

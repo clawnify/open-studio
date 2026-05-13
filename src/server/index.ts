@@ -15,19 +15,9 @@ app.onError((err, c) => {
   return c.json({ error: err.message || String(err) }, 500);
 });
 
-let schemaApplied = false;
-
 app.use("*", async (c, next) => {
   initDB(c.env.DB);
   initUploads(c.env.UPLOADS);
-  if (!schemaApplied) {
-    await c.env.DB.exec(
-      "CREATE TABLE IF NOT EXISTS workflows (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL DEFAULT 'Untitled Workflow', nodes TEXT NOT NULL DEFAULT '[]', edges TEXT NOT NULL DEFAULT '[]', viewport TEXT NOT NULL DEFAULT '{\"x\":0,\"y\":0,\"zoom\":1}', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')));\n" +
-      "CREATE TABLE IF NOT EXISTS generations (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id INTEGER NOT NULL DEFAULT 0, node_id TEXT NOT NULL, prompt TEXT NOT NULL, model TEXT NOT NULL, image_url TEXT, status TEXT NOT NULL DEFAULT 'pending', error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));\n" +
-      "CREATE INDEX IF NOT EXISTS idx_generations_workflow ON generations(workflow_id);"
-    );
-    schemaApplied = true;
-  }
   await next();
 });
 
@@ -397,6 +387,16 @@ async function uploadOpenAIImages(data: { data?: Array<{ b64_json?: string; url?
   return images;
 }
 
+const OPENAI_PROMPT_MAX_CHARS = 32000;
+
+function assertPromptLength(prompt: string) {
+  if (prompt.length > OPENAI_PROMPT_MAX_CHARS) {
+    throw new Error(
+      `Prompt is ${prompt.length} characters, exceeds OpenAI's ${OPENAI_PROMPT_MAX_CHARS}-character limit for GPT image models. Shorten the prompt or break the chain.`,
+    );
+  }
+}
+
 /** Call OpenAI's image generation endpoint and return uploaded image URLs. */
 async function generateImageOpenAI(
   apiKey: string,
@@ -406,6 +406,7 @@ async function generateImageOpenAI(
   imageSize: string,
   quality?: "auto" | "low" | "medium" | "high",
 ): Promise<{ images: Array<{ url: string }> }> {
+  assertPromptLength(prompt);
   const size = openaiSize(aspectRatio, imageSize);
   const body: Record<string, unknown> = { model, prompt, size };
   if (quality) body.quality = quality;
@@ -450,6 +451,7 @@ async function editImageOpenAI(
   _imageSize: string,
   quality?: "auto" | "low" | "medium" | "high",
 ): Promise<{ images: Array<{ url: string }> }> {
+  assertPromptLength(prompt);
   // gpt-image-2 isn't on the edits enum — substitute the latest supported model.
   const editModel = OPENAI_EDIT_SUPPORTED.has(model) ? model : OPENAI_EDIT_FALLBACK;
   const size = openaiEditSize(aspectRatio);
@@ -596,7 +598,7 @@ app.openapi(generateImage, async (c) => {
 
     if (!response.ok) {
       const err = await response.text();
-      return c.json({ error: `OpenRouter error: ${err}` }, 500);
+      return c.json({ error: `OpenRouter error: ${summarizeUpstreamError(response.status, err)}` }, 500);
     }
 
     // Read as text so we can surface the actual response when it isn't valid
@@ -776,6 +778,16 @@ function createLimiter(initialMax: number) {
   };
 }
 
+/**
+ * Detect HTML in a response body (Cloudflare error pages occasionally come
+ * back wrapped in a successful-looking JSON envelope from OpenRouter — and
+ * sometimes show up as the model's literal content). We treat those as
+ * transient and retry.
+ */
+function looksLikeHtml(text: string): boolean {
+  return /^\s*<!doctype html>|^\s*<html\b/i.test(text);
+}
+
 async function runAnalyze(
   apiKey: string,
   prompt: string,
@@ -804,33 +816,54 @@ async function runAnalyze(
   };
   if (outputFormat === "json") body.response_format = { type: "json_object" };
 
-  const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://clawnify.com",
-      "X-Title": "Clawnify",
-    },
-    body: JSON.stringify(body),
-  }, { onRateLimit });
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`OpenRouter error: ${err}`);
+  // Content-level retry: OpenRouter occasionally returns a 200 OK with an
+  // HTML Cloudflare error page (either as the body or wrapped in the JSON
+  // envelope as message.content). fetchWithRetry only retries on 5xx status,
+  // so we wrap with an extra loop that re-fires when the content is HTML.
+  const MAX_CONTENT_ATTEMPTS = 3;
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < MAX_CONTENT_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://clawnify.com",
+          "X-Title": "Clawnify",
+        },
+        body: JSON.stringify(body),
+      }, { onRateLimit });
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`OpenRouter error: ${summarizeUpstreamError(response.status, err)}`);
+      }
+      const rawText = await response.text();
+      if (looksLikeHtml(rawText)) {
+        throw new Error("OpenRouter returned an HTML page instead of JSON — retrying.");
+      }
+      let data: { choices?: Array<{ message?: { content?: string } }> };
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(`OpenRouter returned non-JSON (status ${response.status}, ${rawText.length} bytes): ${rawText.slice(0, 400)}`);
+      }
+      let text = data.choices?.[0]?.message?.content?.trim() || "";
+      if (looksLikeHtml(text)) {
+        throw new Error("Model content was an HTML page — retrying.");
+      }
+      if (outputFormat === "json") {
+        text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      }
+      return { result: text };
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (attempt < MAX_CONTENT_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
   }
-  const rawText = await response.text();
-  let data: { choices?: Array<{ message?: { content?: string } }> };
-  try {
-    data = JSON.parse(rawText);
-  } catch {
-    throw new Error(`OpenRouter returned non-JSON (status ${response.status}, ${rawText.length} bytes): ${rawText.slice(0, 400)}`);
-  }
-  let text = data.choices?.[0]?.message?.content?.trim() || "";
-  if (outputFormat === "json") {
-    // Strip code fences if the model added them despite our instruction.
-    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-  }
-  return { result: text };
+  throw lastError || new Error("Unknown error in runAnalyze");
 }
 
 app.post("/api/analyze", async (c) => {
@@ -871,6 +904,11 @@ app.post("/api/edit-image", async (c) => {
   }>();
   if (!image_url || !mask_data_url || !prompt) {
     return c.json({ error: "image_url, mask_data_url and prompt are required" }, 400);
+  }
+  if (prompt.length > OPENAI_PROMPT_MAX_CHARS) {
+    return c.json({
+      error: `Prompt is ${prompt.length} characters, exceeds OpenAI's ${OPENAI_PROMPT_MAX_CHARS}-character limit.`,
+    }, 400);
   }
 
   try {
@@ -979,6 +1017,59 @@ app.post("/api/upscale", async (c) => {
   }
 });
 
+// ── Workflow runs (snapshots of canvas state per execute) ───────────
+
+const WorkflowRunSchema = z.object({
+  id: z.number(),
+  workflow_id: z.number(),
+  snapshot: z.string().nullable(),
+  status: z.string(),
+  created_at: z.string(),
+  completed_at: z.string().nullable(),
+});
+
+app.post("/api/runs", async (c) => {
+  const { workflow_id } = await c.req.json<{ workflow_id: number }>();
+  if (!workflow_id) return c.json({ error: "workflow_id required" }, 400);
+  const result = await run("INSERT INTO workflow_runs (workflow_id) VALUES (?)", [workflow_id]);
+  const row = await get<z.infer<typeof WorkflowRunSchema>>("SELECT * FROM workflow_runs WHERE id = ?", [result.lastInsertRowid]);
+  return c.json(row!, 200);
+});
+
+app.put("/api/runs/:id", async (c) => {
+  const id = c.req.param("id");
+  const { snapshot, status } = await c.req.json<{ snapshot?: string; status?: string }>();
+  const existing = await get<z.infer<typeof WorkflowRunSchema>>("SELECT * FROM workflow_runs WHERE id = ?", [id]);
+  if (!existing) return c.json({ error: "Run not found" }, 404);
+  await run(
+    "UPDATE workflow_runs SET snapshot = ?, status = ?, completed_at = datetime('now') WHERE id = ?",
+    [snapshot ?? existing.snapshot, status ?? existing.status, id],
+  );
+  // Trim to last 100 per workflow.
+  await run(
+    "DELETE FROM workflow_runs WHERE workflow_id = ? AND id NOT IN (SELECT id FROM workflow_runs WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 100)",
+    [existing.workflow_id, existing.workflow_id],
+  );
+  const row = await get<z.infer<typeof WorkflowRunSchema>>("SELECT * FROM workflow_runs WHERE id = ?", [id]);
+  return c.json(row!, 200);
+});
+
+app.get("/api/runs/:id", async (c) => {
+  const id = c.req.param("id");
+  const row = await get<z.infer<typeof WorkflowRunSchema>>("SELECT * FROM workflow_runs WHERE id = ?", [id]);
+  if (!row) return c.json({ error: "Not found" }, 404);
+  return c.json(row, 200);
+});
+
+app.get("/api/runs/workflow/:workflowId", async (c) => {
+  const workflowId = c.req.param("workflowId");
+  const rows = await query<z.infer<typeof WorkflowRunSchema>>(
+    "SELECT id, workflow_id, status, created_at, completed_at, NULL as snapshot FROM workflow_runs WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 100",
+    [workflowId],
+  );
+  return c.json(rows, 200);
+});
+
 // ── Generations history ──────────────────────────────────────────────
 
 const GenerationSchema = z.object({
@@ -990,6 +1081,7 @@ const GenerationSchema = z.object({
   image_url: z.string().nullable(),
   status: z.string(),
   error: z.string().nullable(),
+  run_id: z.number().nullable().optional(),
   created_at: z.string(),
 });
 
@@ -1026,6 +1118,7 @@ const saveGeneration = createRoute({
             image_url: z.string().nullable(),
             status: z.string(),
             error: z.string().nullable().optional(),
+            run_id: z.number().nullable().optional(),
           }),
         },
       },
@@ -1039,8 +1132,8 @@ const saveGeneration = createRoute({
 app.openapi(saveGeneration, async (c) => {
   const body = c.req.valid("json");
   const result = await run(
-    "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [body.workflow_id, body.node_id, body.prompt, body.model, body.image_url, body.status, body.error ?? null],
+    "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    [body.workflow_id, body.node_id, body.prompt, body.model, body.image_url, body.status, body.error ?? null, body.run_id ?? null],
   );
   const row = await get<z.infer<typeof GenerationSchema>>("SELECT * FROM generations WHERE id = ?", [result.lastInsertRowid]);
   return c.json(row!, 200);
@@ -1204,8 +1297,11 @@ publicApp.openapi(executeWorkflow, async (c) => {
   // Real edges + virtual edges from {{nodeId}} pill references inside prompt text.
   const allDeps: Array<{ source: string; target: string }> = edges.map((e) => ({ source: e.source, target: e.target }));
   for (const n of nodes) {
-    if (n.type !== "prompt") continue;
-    const text = (n.data.text as string) || "";
+    // Both prompt and analyze nodes can carry {{nodeId}} pill references.
+    let text = "";
+    if (n.type === "prompt") text = (n.data.text as string) || "";
+    else if (n.type === "analyze") text = (n.data.prompt as string) || "";
+    else continue;
     const matches = text.match(/\{\{(.+?)\}\}/g) || [];
     for (const m of matches) {
       const refId = m.slice(2, -2).trim();
@@ -1315,7 +1411,7 @@ publicApp.openapi(executeWorkflow, async (c) => {
 
           if (!response.ok) {
             const err = await response.text();
-            results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: `OpenRouter error: ${err}` } });
+            results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: `OpenRouter error: ${summarizeUpstreamError(response.status, err)}` } });
             outputs.set(nodeId, { promptText: prompt });
             return;
           }
@@ -1366,7 +1462,19 @@ publicApp.openapi(executeWorkflow, async (c) => {
         break;
       }
       case "analyze": {
-        const analyzePrompt = (node.data.prompt as string) || inputText || inputPromptText || "Describe this image.";
+        // Same {{nodeId}} resolution as the prompt case so analyze
+        // instructions can reference upstream prompts/analyzes.
+        const rawAnalyzePrompt = (node.data.prompt as string) || "";
+        const resolvedAnalyzePrompt = rawAnalyzePrompt.replace(/\{\{(.+?)\}\}/g, (_match, refId: string) => {
+          const cleanId = refId.trim();
+          const resolved = outputs.get(cleanId);
+          if (resolved?.text) return resolved.text;
+          const ref = nodeMap.get(cleanId);
+          if (!ref) return _match;
+          const refData = ref.data as Record<string, unknown>;
+          return (refData.text as string) || (refData.result as string) || "";
+        });
+        const analyzePrompt = resolvedAnalyzePrompt || inputText || inputPromptText || "Describe this image.";
         const analyzeModel = (node.data.model as string) || "~google/gemini-flash-latest";
         const outputFormat = ((node.data.outputFormat as string) === "json" ? "json" : "text") as "json" | "text";
         if (inputImages.length === 0) {

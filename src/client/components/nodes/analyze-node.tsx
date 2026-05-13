@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { useWorkflow } from "../../context";
 import { api } from "../../api";
 import { NodeHeader } from "./node-header";
 import { NodeToolbar } from "./node-toolbar";
+import { PillEditor } from "../pill-editor";
 import type { AnalyzeNodeData, ModelOption } from "../../types";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -11,10 +12,17 @@ import { Button } from "@/components/ui/button";
 interface Props { id: string; data: AnalyzeNodeData; }
 
 export function AnalyzeNode({ id, data }: Props) {
-  const { updateNodeData } = useWorkflow();
+  const { updateNodeData, nodes } = useWorkflow();
   const [analyzeModels, setAnalyzeModels] = useState<ModelOption[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [draftPrompt, setDraftPrompt] = useState("");
+
+  // Other prompt/analyze nodes are the valid reference targets — same set the
+  // Prompt node uses.
+  const referenceNodes = useMemo(
+    () => nodes.filter((n) => (n.type === "prompt" || n.type === "analyze") && n.id !== id),
+    [nodes, id],
+  );
 
   useEffect(() => {
     let alive = true;
@@ -36,12 +44,12 @@ export function AnalyzeNode({ id, data }: Props) {
       <div className="p-2.5 flex flex-col gap-1.5">
         <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Instruction</label>
         <div className="relative">
-          <textarea
-            className="nodrag nowheel w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs p-1.5 pr-16 outline-none focus:border-accent resize-none"
-            rows={3}
+          <PillEditor
+            value={data.prompt || ""}
+            onChange={(text) => updateNodeData(id, { prompt: text })}
+            referenceNodes={referenceNodes}
             placeholder="e.g. Extract clothing items as JSON: {items: [...]}, or: Describe the dominant color."
-            value={data.prompt}
-            onChange={(e) => updateNodeData(id, { prompt: e.target.value })}
+            style={{ minHeight: "64px", maxHeight: "200px" }}
           />
           <button
             className="nodrag absolute bottom-1.5 right-1.5 text-[10px] text-gray-400 hover:text-amber-600 bg-white/90 border border-border-dim rounded px-1.5 py-0.5 cursor-pointer transition-opacity opacity-0 group-hover:opacity-100"
@@ -93,7 +101,7 @@ export function AnalyzeNode({ id, data }: Props) {
           <DialogHeader>
             <DialogTitle>{data.label || "Analyze"}</DialogTitle>
             <DialogDescription>
-              Edit the instruction sent to the vision model. Output format: <code className="text-[11px]">{data.outputFormat}</code>.
+              Edit the instruction sent to the vision model. Output format: <code className="text-[11px]">{data.outputFormat}</code>. Reference other nodes with <code className="text-[11px]">{"{{node_id}}"}</code>.
             </DialogDescription>
           </DialogHeader>
           <textarea
