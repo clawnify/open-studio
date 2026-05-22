@@ -16,7 +16,7 @@ app.onError((err, c) => {
 });
 
 app.use("*", async (c, next) => {
-  initDB(c.env.DB);
+  initDB(c.env);
   initUploads(c.env.UPLOADS);
   await next();
 });

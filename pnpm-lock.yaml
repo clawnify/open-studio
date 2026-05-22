@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@clawnify/db':
+        specifier: ^0.2.0
+        version: 0.2.0
       '@fontsource-variable/geist':
         specifier: ^5.2.8
         version: 5.2.8
@@ -223,6 +226,9 @@ packages:
   '@babel/types@7.29.0':
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
+
+  '@clawnify/db@0.2.0':
+    resolution: {integrity: sha512-6ADNSig+qLg24xajbDcjJXktBZSNKwfTDJhh1oH5TFKh8frVOzHirVGe06XTeMn9m5lI40jlpQ2sLo0OOl0iEA==}
 
   '@cloudflare/kv-asset-handler@0.4.2':
     resolution: {integrity: sha512-SIOD2DxrRRwQ+jgzlXCqoEFiKOFqaPjhnNTGKXSRLvp1HiOvapLaFG2kEr9dYQTYe8rKrd9uvDUzmAITeNyaHQ==}
@@ -3619,6 +3625,8 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
+
+  '@clawnify/db@0.2.0': {}
 
   '@cloudflare/kv-asset-handler@0.4.2': {}
 
