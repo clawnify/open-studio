@@ -1,8 +1,8 @@
+<img src="readme-banner.png" alt="Open Studio preview" width="100%" />
+
 # Open Studio
 
 A visual AI image generation studio with a justified gallery and node-based workflow editor. Built with **Preact + Tailwind CSS + Hono + D1**. Deploys to Cloudflare Workers via [Clawnify](https://clawnify.com).
-
-<img width="1712" height="920" alt="Image" src="https://github.com/user-attachments/assets/fde06697-b9d5-430f-b303-8004097af457" />
 
 ## Features
 
