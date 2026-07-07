@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { Handle, Position } from "@xyflow/react";
+import { Download, Copy, Check, Trash2 } from "lucide-react";
 import { useWorkflow } from "../../context";
 import { NodeHeader } from "./node-header";
 import { NodeToolbar } from "./node-toolbar";
+import { downloadImage } from "../../download";
+import { ImageLightbox } from "../image-lightbox";
 import type { GenerateNodeData } from "../../types";
 
 interface Props { id: string; data: GenerateNodeData; }
@@ -10,6 +13,7 @@ interface Props { id: string; data: GenerateNodeData; }
 export function GenerateNode({ id, data }: Props) {
   const { updateNodeData, models } = useWorkflow();
   const [copied, setCopied] = useState(false);
+  const [lightbox, setLightbox] = useState(false);
   const selectClass = "w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs py-1 px-2 outline-none cursor-pointer appearance-none focus:border-accent";
 
   const copyPrompt = async (e: { stopPropagation: () => void; preventDefault: () => void }) => {
@@ -66,22 +70,53 @@ export function GenerateNode({ id, data }: Props) {
         {data.status === "error" && <div className="text-[11px] p-1.5 rounded bg-red-50 text-red-500 break-words">{data.error || "Generation failed"}</div>}
         {data.imageUrl && (
           <div className="nodrag relative rounded overflow-hidden border border-border-dim mt-1">
-            <img className="block w-full max-h-[180px] object-cover" src={data.imageUrl} alt="Generated" />
-            {data.lastPrompt && (
+            <img
+              className="nodrag block w-full max-h-[180px] object-cover cursor-zoom-in"
+              src={data.imageUrl}
+              alt="Generated"
+              draggable={false}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); setLightbox(true); }}
+            />
+            <div className="nodrag absolute bottom-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
-                className="nodrag absolute bottom-1.5 right-1.5 text-[10px] text-white bg-black/60 hover:bg-black/80 border-none rounded px-1.5 py-0.5 cursor-pointer transition-opacity opacity-0 group-hover:opacity-100"
+                className="inline-flex items-center justify-center text-white bg-black/60 hover:bg-black/80 border-none rounded p-1 cursor-pointer"
                 onMouseDown={(e) => e.stopPropagation()}
-                onClick={copyPrompt}
-                title="Copy prompt sent to model"
+                onClick={(e) => { e.stopPropagation(); e.preventDefault(); if (data.imageUrl) downloadImage(data.imageUrl, `${data.label || id}.png`); }}
+                title="Download image"
               >
-                {copied ? "✓ Copied" : "⧉ Copy prompt"}
+                <Download size={12} />
               </button>
-            )}
+              {data.lastPrompt && (
+                <button
+                  className="inline-flex items-center justify-center text-white bg-black/60 hover:bg-black/80 border-none rounded p-1 cursor-pointer"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={copyPrompt}
+                  title="Copy prompt sent to model"
+                >
+                  {copied ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              )}
+              <button
+                className="inline-flex items-center justify-center text-white bg-red-600/80 hover:bg-red-600 border-none rounded p-1 cursor-pointer"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); e.preventDefault(); updateNodeData(id, { imageUrl: "", status: "idle", error: undefined, lastPrompt: undefined }); }}
+                title="Clear this image from the node (does not delete history in Outputs)"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
           </div>
         )}
       </div>
       <Handle type="target" position={Position.Left} className="!bg-accent" id="prompt" />
       <Handle type="source" position={Position.Right} className="!bg-emerald-500" />
+      <ImageLightbox
+        src={lightbox && data.imageUrl ? data.imageUrl : null}
+        filename={`${data.label || id}.png`}
+        prompt={data.lastPrompt}
+        onClose={() => setLightbox(false)}
+      />
     </div>
   );
 }

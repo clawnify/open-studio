@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useWorkflow } from "../context";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -10,14 +10,6 @@ interface Props {
 export function Toolbar({ workflowView, onWorkflowViewChange }: Props) {
   const { activeWorkflow, saveWorkflow, executeWorkflow, executing, lastRunResults } = useWorkflow();
   const [showResults, setShowResults] = useState(false);
-  // Auto-open the popover when a run finishes with results.
-  const wasExecutingRef = useRef(executing);
-  useEffect(() => {
-    if (wasExecutingRef.current && !executing && lastRunResults.length > 0) {
-      setShowResults(true);
-    }
-    wasExecutingRef.current = executing;
-  }, [executing, lastRunResults.length]);
 
   const tabClass = (active: boolean) =>
     `px-3 py-1.5 text-xs font-semibold cursor-pointer transition-all ${

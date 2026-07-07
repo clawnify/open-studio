@@ -56,6 +56,8 @@ export interface WorkflowContextValue {
   // Generations
   generations: Generation[];
   refreshGenerations: () => Promise<void>;
+  /** Delete a generation row + its R2 blob (if owned). Optimistic. */
+  deleteGeneration: (id: number) => Promise<void>;
   /** Load a workflow_runs snapshot into the canvas — does not auto-save. */
   loadRun: (runId: number) => Promise<void>;
   /**

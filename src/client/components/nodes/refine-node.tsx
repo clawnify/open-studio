@@ -46,7 +46,7 @@ export function RefineNode({ id, data }: Props) {
         {data.imageUrls && data.imageUrls.length > 0 && (
           <div className="nodrag mt-1 grid gap-0.5" style={{ gridTemplateColumns: `repeat(${grid.cols}, minmax(0, 1fr))` }}>
             {data.imageUrls.map((url, idx) => (
-              <img key={idx} className="block w-full aspect-square object-cover rounded border border-border-dim" src={url} alt={`Tile ${idx + 1}`} />
+              <img key={idx} className="nodrag block w-full aspect-square object-cover rounded border border-border-dim" src={url} alt={`Tile ${idx + 1}`} draggable={false} />
             ))}
           </div>
         )}

@@ -270,6 +270,17 @@ export function useWorkflowState(): WorkflowContextValue {
     }
   }, []);
 
+  const deleteGeneration = useCallback(async (id: number) => {
+    setGenerations((prev) => prev.filter((g) => g.id !== id));
+    try {
+      await api("DELETE", `/api/generations/${id}`);
+    } catch (e) {
+      // Roll back the optimistic removal if the server rejected.
+      setError(String(e));
+      await refreshGenerations();
+    }
+  }, [refreshGenerations]);
+
   const duplicateWorkflow = useCallback(async (id: number) => {
     try {
       const wf = await api<Workflow>("POST", `/api/workflows/${id}/duplicate`);
@@ -458,6 +469,29 @@ export function useWorkflowState(): WorkflowContextValue {
               const img = result.images[0];
               const imageUrl = img?.url || "";
 
+              // Models occasionally return 200 OK with no image (a text-only
+              // refusal or "I'll work on it..." reply). Don't claim success —
+              // surface the text as the error so the user can see why.
+              if (!imageUrl) {
+                const errMsg = result.text
+                  ? `Model returned no image. Response: ${result.text.slice(0, 400)}`
+                  : "Model returned no image.";
+                updateNodeData(nodeId, { status: "error", error: errMsg });
+                erroredNodes?.add(nodeId);
+                outputs.set(nodeId, { promptText: prompt });
+                await api("POST", "/api/generations", {
+                  workflow_id: activeIdRef.current,
+                  node_id: nodeId,
+                  prompt,
+                  model,
+                  image_url: null,
+                  status: "error",
+                  error: errMsg,
+                  run_id: currentRunIdRef.current,
+                });
+                break;
+              }
+
               updateNodeData(nodeId, { status: "success", imageUrl, lastPrompt: prompt });
               outputs.set(nodeId, { imageUrl, text: result.text, promptText: prompt });
 
@@ -467,7 +501,7 @@ export function useWorkflowState(): WorkflowContextValue {
                 node_id: nodeId,
                 prompt,
                 model,
-                image_url: img?.url || null,
+                image_url: imageUrl,
                 status: "success",
                 run_id: currentRunIdRef.current,
               });
@@ -967,6 +1001,7 @@ export function useWorkflowState(): WorkflowContextValue {
     features,
     generations,
     refreshGenerations,
+    deleteGeneration,
     loadRun,
     runOutputFeedback,
     isAgent,

@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { initDB, query, get, run } from "./db.js";
-import { initUploads, putUpload, getUpload, readUploadAsBase64DataUrl } from "./uploads.js";
+import { initUploads, putUpload, getUpload, deleteUpload, readUploadAsBase64DataUrl } from "./uploads.js";
 
 type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: string; FAL_API_KEY: string; OPENAI_API_KEY?: string } };
 
@@ -20,6 +20,45 @@ app.use("*", async (c, next) => {
   initUploads(c.env.UPLOADS);
   await next();
 });
+
+// One-shot, additive-only schema bootstrap. Only called from routes that
+// need the newer tables/columns (workflow_runs, generations.run_id), so a
+// hang here can't take down /api/workflows etc. Every statement is
+// CREATE IF NOT EXISTS or ALTER TABLE ADD COLUMN with per-statement
+// try/catch and a 3s timeout — never drops or rewrites data, safe to re-run.
+let schemaReady: Promise<void> | null = null;
+function ensureSchema(db: D1Database): Promise<void> {
+  if (schemaReady) return schemaReady;
+  const withTimeout = <T>(p: Promise<T>, ms: number) => Promise.race([
+    p,
+    new Promise<T>((_, rej) => setTimeout(() => rej(new Error("schema statement timed out")), ms)),
+  ]);
+  schemaReady = (async () => {
+    const statements: string[] = [
+      `CREATE TABLE IF NOT EXISTS workflow_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workflow_id INTEGER NOT NULL,
+        snapshot TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)`,
+      `ALTER TABLE generations ADD COLUMN run_id INTEGER`,
+      `CREATE INDEX IF NOT EXISTS idx_generations_run ON generations(run_id)`,
+    ];
+    for (const sql of statements) {
+      try {
+        await withTimeout(db.prepare(sql).run(), 3000);
+      } catch {
+        // Already applied, or transient — skip. We retry next isolate.
+      }
+    }
+  })();
+  // If the whole thing throws somehow, reset so the next request can retry.
+  schemaReady.catch(() => { schemaReady = null; });
+  return schemaReady;
+}
 
 // ── Schemas ──────────────────────────────────────────────────────────
 
@@ -580,31 +619,12 @@ app.openapi(generateImage, async (c) => {
     }
     content.push({ type: "text", text: prompt });
 
-    const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://clawnify.com",
-        "X-Title": "Clawnify",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content }],
-        modalities,
-        image_config: { aspect_ratio, image_size },
-      }),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      return c.json({ error: `OpenRouter error: ${summarizeUpstreamError(response.status, err)}` }, 500);
-    }
-
-    // Read as text so we can surface the actual response when it isn't valid
-    // JSON (CF gateway timeout, partial body, etc.) — `response.json()` would
-    // throw a bare SyntaxError here that's useless for debugging.
-    const rawText = await response.text();
+    // Content-level retry: OpenRouter occasionally returns 200 OK with an HTML
+    // Cloudflare error page (or wraps one inside message.content). fetchWithRetry
+    // only retries on 5xx, so we wrap with an outer loop that re-fires when we
+    // see HTML or unparseable bodies. Mirror of the runAnalyze pattern.
+    const MAX_CONTENT_ATTEMPTS = 3;
+    let lastError: Error | null = null;
     let data: {
       choices?: Array<{
         message?: {
@@ -612,13 +632,54 @@ app.openapi(generateImage, async (c) => {
           images?: Array<{ image_url: { url: string } }>;
         };
       }>;
-    };
-    try {
-      data = JSON.parse(rawText);
-    } catch {
-      return c.json({
-        error: `OpenRouter returned non-JSON (status ${response.status}, ${rawText.length} bytes): ${rawText.slice(0, 400)}`,
-      }, 500);
+    } | null = null;
+    for (let attempt = 0; attempt < MAX_CONTENT_ATTEMPTS; attempt++) {
+      try {
+        const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://clawnify.com",
+            "X-Title": "Clawnify",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content }],
+            modalities,
+            image_config: { aspect_ratio, image_size },
+          }),
+        });
+
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`OpenRouter error: ${summarizeUpstreamError(response.status, err)}`);
+        }
+
+        const rawText = await response.text();
+        if (looksLikeHtml(rawText)) {
+          throw new Error("OpenRouter returned an HTML page instead of JSON — retrying.");
+        }
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          throw new Error(`OpenRouter returned non-JSON (status ${response.status}, ${rawText.length} bytes): ${rawText.slice(0, 400)}`);
+        }
+        const innerContent = data?.choices?.[0]?.message?.content || "";
+        if (looksLikeHtml(innerContent)) {
+          throw new Error("Model content was an HTML page — retrying.");
+        }
+        break; // success
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        data = null;
+        if (attempt < MAX_CONTENT_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        }
+      }
+    }
+    if (!data) {
+      return c.json({ error: lastError?.message || "OpenRouter generate failed after retries" }, 500);
     }
 
     const message = data.choices?.[0]?.message;
@@ -627,19 +688,19 @@ app.openapi(generateImage, async (c) => {
     for (const img of message?.images || []) {
       const remoteUrl = img.image_url.url;
       try {
-        let data: ArrayBuffer;
+        let bytesBuf: ArrayBuffer;
         if (remoteUrl.startsWith("data:")) {
           const base64 = remoteUrl.split(",")[1];
           const binary = atob(base64);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          data = bytes.buffer;
+          bytesBuf = bytes.buffer;
         } else {
           const imgRes = await fetch(remoteUrl);
-          data = await imgRes.arrayBuffer();
+          bytesBuf = await imgRes.arrayBuffer();
         }
         const filename = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
-        const url = await putUpload(filename, data, "image/png");
+        const url = await putUpload(filename, bytesBuf, "image/png");
         images.push({ url });
       } catch {
         images.push({ url: remoteUrl });
@@ -1029,6 +1090,7 @@ const WorkflowRunSchema = z.object({
 });
 
 app.post("/api/runs", async (c) => {
+  await ensureSchema(c.env.DB);
   const { workflow_id } = await c.req.json<{ workflow_id: number }>();
   if (!workflow_id) return c.json({ error: "workflow_id required" }, 400);
   const result = await run("INSERT INTO workflow_runs (workflow_id) VALUES (?)", [workflow_id]);
@@ -1037,6 +1099,7 @@ app.post("/api/runs", async (c) => {
 });
 
 app.put("/api/runs/:id", async (c) => {
+  await ensureSchema(c.env.DB);
   const id = c.req.param("id");
   const { snapshot, status } = await c.req.json<{ snapshot?: string; status?: string }>();
   const existing = await get<z.infer<typeof WorkflowRunSchema>>("SELECT * FROM workflow_runs WHERE id = ?", [id]);
@@ -1055,6 +1118,7 @@ app.put("/api/runs/:id", async (c) => {
 });
 
 app.get("/api/runs/:id", async (c) => {
+  await ensureSchema(c.env.DB);
   const id = c.req.param("id");
   const row = await get<z.infer<typeof WorkflowRunSchema>>("SELECT * FROM workflow_runs WHERE id = ?", [id]);
   if (!row) return c.json({ error: "Not found" }, 404);
@@ -1062,6 +1126,7 @@ app.get("/api/runs/:id", async (c) => {
 });
 
 app.get("/api/runs/workflow/:workflowId", async (c) => {
+  await ensureSchema(c.env.DB);
   const workflowId = c.req.param("workflowId");
   const rows = await query<z.infer<typeof WorkflowRunSchema>>(
     "SELECT id, workflow_id, status, created_at, completed_at, NULL as snapshot FROM workflow_runs WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 100",
@@ -1130,6 +1195,7 @@ const saveGeneration = createRoute({
 });
 
 app.openapi(saveGeneration, async (c) => {
+  await ensureSchema(c.env.DB);
   const body = c.req.valid("json");
   const result = await run(
     "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1137,6 +1203,20 @@ app.openapi(saveGeneration, async (c) => {
   );
   const row = await get<z.infer<typeof GenerationSchema>>("SELECT * FROM generations WHERE id = ?", [result.lastInsertRowid]);
   return c.json(row!, 200);
+});
+
+app.delete("/api/generations/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+  const row = await get<{ image_url: string | null }>("SELECT image_url FROM generations WHERE id = ?", [id]);
+  if (!row) return c.json({ error: "Not found" }, 404);
+  // Drop the R2 blob if it's ours (external URLs are left alone — they may be
+  // shared by other rows or owned by the provider).
+  if (row.image_url && row.image_url.startsWith("/api/uploads/")) {
+    try { await deleteUpload(row.image_url.replace("/api/uploads/", "")); } catch {}
+  }
+  await run("DELETE FROM generations WHERE id = ?", [id]);
+  return c.json({ ok: true }, 200);
 });
 
 // ── Suggest node name ────────────────────────────────────────────────

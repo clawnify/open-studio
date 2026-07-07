@@ -85,14 +85,25 @@ export function WorkflowCanvas() {
         ? { ...n, className: `${n.className || ""} flow-node-feeding-selection`.trim() }
         : n,
     );
-    const de = edges.map((e) => {
-      if (!selectedIds.has(e.target) && !selectedIds.has(e.source)) return e;
-      return {
-        ...e,
-        style: { ...e.style, strokeWidth: 3.5 },
-        className: `${e.className || ""} flow-edge-touching-selection`.trim(),
-      };
-    });
+    // Two passes so highlighted edges render on top of overlapping non-highlighted
+    // ones: xyflow draws edges in array order, so we partition then concat with
+    // touching edges last. zIndex on the edge would also work but only relative
+    // to siblings in the same edge layer — order is the simpler guarantee.
+    const others: typeof edges = [];
+    const highlighted: typeof edges = [];
+    for (const e of edges) {
+      if (!selectedIds.has(e.target) && !selectedIds.has(e.source)) {
+        others.push(e);
+      } else {
+        highlighted.push({
+          ...e,
+          style: { ...e.style, strokeWidth: 3.5 },
+          className: `${e.className || ""} flow-edge-touching-selection`.trim(),
+          zIndex: 1000,
+        });
+      }
+    }
+    const de = [...others, ...highlighted];
     return { decoratedNodes: dn, decoratedEdges: de };
   }, [nodes, edges]);
 
