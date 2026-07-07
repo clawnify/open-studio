@@ -9,3 +9,6 @@ uploads/
 .wrangler/
 .claude/
 .clawnify/
+
+# macOS
+.DS_Store
