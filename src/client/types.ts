@@ -1,5 +1,5 @@
 export interface Workflow {
-  id: number;
+  id: string;
   name: string;
   nodes: string;
   edges: string;
@@ -9,21 +9,21 @@ export interface Workflow {
 }
 
 export interface Generation {
-  id: number;
-  workflow_id: number;
+  id: string;
+  workflow_id: string;
   node_id: string;
   prompt: string;
   model: string;
   image_url: string | null;
   status: string;
   error: string | null;
-  run_id: number | null;
+  run_id: string | null;
   created_at: string;
 }
 
 export interface WorkflowRun {
-  id: number;
-  workflow_id: number;
+  id: string;
+  workflow_id: string;
   snapshot: string | null;
   status: string;
   created_at: string;
@@ -34,7 +34,7 @@ export interface ModelOption {
   id: string;
   name: string;
   /** Which upstream the request is routed to. Used by the UI to decide which provider-specific options (e.g. OpenAI's `quality`) to show. */
-  provider?: "openrouter" | "openai";
+  provider?: "openrouter" | "openai" | "fal" | "anthropic";
 }
 
 export interface PromptNodeData {

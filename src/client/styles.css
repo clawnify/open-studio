@@ -1,71 +1,211 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
 
+/* ─────────────────────────────────────────────────────────────────────
+   Clawnify Apps design system — single source of truth.
+   Tokens follow DESIGN.md (coral primary, neutral surfaces, one blue for
+   focus/links, muted status). Every shadcn primitive reads these same
+   tokens, so rebranding means editing hexes here and nowhere else.
+   Dark mode flips the same variables via .dark + prefers-color-scheme.
+   ──────────────────────────────────────────────────────────────────── */
 @theme {
-  --color-surface: #ffffff;
-  --color-surface-secondary: #f8f9fa;
-  --color-surface-card: #f1f3f4;
-  --color-surface-hover: #e8eaed;
-  --color-border-dim: #e0e0e0;
-  --color-border-mid: #dadce0;
-  --color-accent: #4285f4;
-  --color-accent-hover: #3367d6;
-  --color-accent-light: rgba(66, 133, 244, 0.08);
-  --color-generate: #4285f4;
-  --color-generate-hover: #3367d6;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  /* Surfaces */
+  --color-background: #f8f9fa; /* app canvas / page */
+  --color-surface: #ffffff; /* cards, panels, nodes, popovers */
+  --color-surface-sunken: #f1f5f9; /* headers, hovers, chips, wells */
+
+  /* Text */
+  --color-foreground: #1a202c; /* ink — primary text + data */
+  --color-muted: #475569; /* secondary text, labels, eyebrows */
+  --color-faint: #94a3b8; /* placeholders, disabled, decorative */
+
+  /* Lines */
+  --color-border: #e2e8f0; /* hairlines, outlines, dividers */
+  --color-border-strong: #cbd5e1; /* graph edges, stronger dividers */
+  --color-ring: #2563eb; /* focus ring — the only chrome blue */
+  --color-link: #2563eb; /* inline links (same blue) */
+
+  /* Brand action — one coral CTA per screen */
+  --color-primary: #dd5164;
+  --color-primary-hover: #c53a4e; /* darkens on hover, never lightens */
+  --color-on-primary: #ffffff;
+
+  /* Status (muted, never pure-saturated) */
+  --color-success: #047857;
+  --color-success-tint: #ecfdf5;
+  --color-warning: #b45309;
+  --color-warning-tint: #fffbeb;
+  --color-danger: #b91c1c;
+  --color-danger-hover: #991b1b;
+  --color-danger-tint: #fef2f2;
+
+  /* shadcn primitive aliases → same palette (Button/Dialog inherit) */
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-foreground);
+  --color-popover: var(--color-surface);
+  --color-popover-foreground: var(--color-foreground);
+  --color-primary-foreground: var(--color-on-primary);
+  --color-secondary: var(--color-surface-sunken);
+  --color-secondary-foreground: var(--color-foreground);
+  --color-muted-foreground: var(--color-muted);
+  --color-accent: var(--color-surface-sunken);
+  --color-accent-foreground: var(--color-foreground);
+  --color-destructive: var(--color-danger);
+  --color-input: var(--color-border);
+
+  --radius-sm: 6px; /* buttons, inputs, chips */
+  --radius-md: 8px; /* cards, popovers, panels */
+  --radius-lg: 12px; /* modals, large containers */
+}
+
+/* Dark palette — GitHub-dim, not pure black. Flips the variables the
+   utilities already reference; both modes come free from the tokens. */
+@layer base {
+  .dark {
+    --color-background: #0d1117;
+    --color-surface: #161b22;
+    --color-surface-sunken: #1c2128;
+    --color-foreground: #e6edf3;
+    --color-muted: #9ba7b3;
+    --color-faint: #6e7681;
+    --color-border: #30363d;
+    --color-border-strong: #444c56;
+    --color-ring: #4493f8;
+    --color-link: #4493f8;
+    --color-primary: #dd5164;
+    --color-primary-hover: #c53a4e;
+    --color-success: #3fb950;
+    --color-success-tint: #12261e;
+    --color-warning: #d29922;
+    --color-warning-tint: #2a2210;
+    --color-danger: #f85149;
+    --color-danger-hover: #ff6a60;
+    --color-danger-tint: #2d1518;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light) {
+      --color-background: #0d1117;
+      --color-surface: #161b22;
+      --color-surface-sunken: #1c2128;
+      --color-foreground: #e6edf3;
+      --color-muted: #9ba7b3;
+      --color-faint: #6e7681;
+      --color-border: #30363d;
+      --color-border-strong: #444c56;
+      --color-ring: #4493f8;
+      --color-link: #4493f8;
+      --color-primary: #dd5164;
+      --color-primary-hover: #c53a4e;
+      --color-success: #3fb950;
+      --color-success-tint: #12261e;
+      --color-warning: #d29922;
+      --color-warning-tint: #2a2210;
+      --color-danger: #f85149;
+      --color-danger-hover: #ff6a60;
+      --color-danger-tint: #2d1518;
+    }
+  }
 }
 
 /* ── Base ──────────────────────────────────────────────────────────── */
-html, body, #app {
+html,
+body,
+#app {
   @apply h-full w-full overflow-hidden;
 }
 
 body {
-  @apply bg-surface text-gray-900 text-[13px] antialiased;
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  @apply bg-background text-foreground text-[13px] antialiased;
+  font-family: var(--font-sans);
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────── */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { @apply bg-gray-300 rounded-sm; }
-::-webkit-scrollbar-thumb:hover { @apply bg-gray-400; }
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-border-strong rounded-sm;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted;
+}
 
 /* ── Spinner ───────────────────────────────────────────────────────── */
 .spinner {
-  @apply inline-block w-3.5 h-3.5 rounded-full border-2 border-gray-300 border-t-current;
+  @apply inline-block w-3.5 h-3.5 rounded-full border-2 border-border border-t-current;
   animation: spin 0.6s linear infinite;
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
-
-@keyframes pulse-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ── React Flow Overrides ──────────────────────────────────────────── */
-.react-flow { background: var(--color-surface-secondary) !important; }
-.react-flow__background { background: var(--color-surface-secondary) !important; }
-.react-flow__background pattern line { stroke: var(--color-border-dim) !important; }
-.react-flow__controls { @apply !rounded-lg overflow-hidden !border !border-border-dim; box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important; }
-.react-flow__controls-button { background: white !important; border-color: var(--color-border-dim) !important; fill: theme(colors.gray.500) !important; color: theme(colors.gray.500) !important; }
-.react-flow__controls-button:hover { background: var(--color-surface-card) !important; }
-.react-flow__minimap { @apply !rounded-lg !border !border-border-dim overflow-hidden; }
-.react-flow__edge-path { stroke: var(--color-border-mid) !important; stroke-width: 2 !important; transition: stroke 120ms, stroke-width 120ms; }
-.react-flow__connection-line { stroke: var(--color-border-mid) !important; stroke-width: 2 !important; }
-.react-flow__handle { @apply !w-2.5 !h-2.5 !border-2 transition-all; border-color: white !important; }
-.react-flow__handle:hover { border-color: var(--color-accent) !important; }
+.react-flow {
+  background: var(--color-background) !important;
+}
+.react-flow__background {
+  background: var(--color-background) !important;
+}
+.react-flow__background pattern line {
+  stroke: var(--color-border) !important;
+}
+.react-flow__controls {
+  @apply !rounded-md overflow-hidden !border !border-border;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12) !important;
+}
+.react-flow__controls-button {
+  background: var(--color-surface) !important;
+  border-color: var(--color-border) !important;
+  fill: var(--color-muted) !important;
+  color: var(--color-muted) !important;
+}
+.react-flow__controls-button:hover {
+  background: var(--color-surface-sunken) !important;
+}
+.react-flow__minimap {
+  @apply !rounded-md !border !border-border overflow-hidden;
+}
+.react-flow__edge-path {
+  stroke: var(--color-border-strong) !important;
+  stroke-width: 2 !important;
+  transition:
+    stroke 120ms,
+    stroke-width 120ms;
+}
+.react-flow__connection-line {
+  stroke: var(--color-border-strong) !important;
+  stroke-width: 2 !important;
+}
+.react-flow__handle {
+  @apply !w-2.5 !h-2.5 !border-2 transition-all;
+  border-color: var(--color-surface) !important;
+}
+.react-flow__handle:hover {
+  border-color: var(--color-ring) !important;
+}
 
-/* When a node is selected, emphasize edges touching it and enlarge the */
-/* output handle of any node feeding into the selection. */
-.flow-edge-touching-selection .react-flow__edge-path { stroke: var(--color-accent) !important; }
+/* Selected node: highlight touching edges + enlarge feeding handles in the
+   focus blue (a selection cue, not decoration). No colored glow. */
+.flow-edge-touching-selection .react-flow__edge-path {
+  stroke: var(--color-ring) !important;
+}
 .flow-node-feeding-selection .react-flow__handle-right,
-.flow-node-feeding-selection .react-flow__handle.source { @apply !w-4 !h-4 !border-[3px]; box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.18); }
+.flow-node-feeding-selection .react-flow__handle.source {
+  @apply !w-4 !h-4 !border-[3px];
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ring) 30%, transparent);
+}
 
 /* ── React Flow node wrapper reset (remove default bg/border) ─────── */
 .react-flow__node {
@@ -77,38 +217,51 @@ body {
 }
 
 /* ── Flow Node base ────────────────────────────────────────────────── */
+/* Nearly flat: surface card on the canvas, hierarchy from border + tone,
+   no resting shadow (DESIGN: resting cards get a border only). */
 .flow-node {
-  @apply min-w-[220px] max-w-[280px] bg-white border border-border-dim rounded-lg text-xs;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  @apply min-w-[220px] max-w-[280px] bg-surface border border-border rounded-md text-xs;
 }
-.flow-node > :first-child { @apply rounded-t-lg overflow-hidden; }
-.flow-node:hover { @apply border-gray-400; }
+.flow-node > :first-child {
+  @apply rounded-t-md overflow-hidden;
+}
+.flow-node:hover {
+  @apply border-border-strong;
+}
 
-.generate-node.status-running { @apply border-accent; box-shadow: 0 0 12px rgba(66,133,244,0.2); }
-.generate-node.status-success { @apply border-emerald-500; }
-.generate-node.status-error { @apply border-red-500; }
+/* Node status: convey with border tone, never a glow. */
+.generate-node.status-running {
+  @apply border-ring;
+}
+.generate-node.status-success {
+  @apply border-success;
+}
+.generate-node.status-error {
+  @apply border-danger;
+}
 
 /* ── Prompt editor ─────────────────────────────────────────────────── */
 .prompt-editor:empty::before {
   content: attr(data-placeholder);
-  @apply text-gray-400 pointer-events-none;
+  @apply text-faint pointer-events-none;
 }
 
+/* {{nodeId}} references render as quiet chips (facts, not signals). */
 .prompt-pill {
-  @apply inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-600 align-baseline;
+  @apply inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm text-[10px] font-semibold bg-surface-sunken text-muted border border-border align-baseline;
   user-select: all;
 }
 
 .prompt-pill--detached {
-  @apply bg-gray-100 text-gray-400;
+  @apply bg-surface-sunken text-faint border-transparent;
 }
 
 /* ── Node floating toolbar ─────────────────────────────────────────── */
 .node-toolbar {
-  @apply absolute left-1/2 flex items-center gap-0.5 bg-white rounded-lg px-1.5 py-0.5 opacity-0 pointer-events-none transition-opacity;
+  @apply absolute left-1/2 flex items-center gap-0.5 bg-surface border border-border rounded-md px-1.5 py-0.5 opacity-0 pointer-events-none transition-opacity;
   transform: translate(-50%, 0);
   top: -36px;
-  box-shadow: 0 1px 6px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
   z-index: 10;
 }
 .react-flow__node.selected .node-toolbar {
@@ -116,19 +269,19 @@ body {
 }
 
 .node-toolbar__btn {
-  @apply flex items-center gap-1 px-1.5 py-1 bg-transparent border-none rounded-full text-[10px] font-medium text-gray-500 cursor-pointer transition-colors whitespace-nowrap;
+  @apply flex items-center gap-1 px-1.5 py-1 bg-transparent border-none rounded-sm text-[10px] font-medium text-muted cursor-pointer transition-colors whitespace-nowrap;
 }
 .node-toolbar__btn:hover {
-  @apply bg-gray-100 text-gray-700;
+  @apply bg-surface-sunken text-foreground;
 }
 .node-toolbar__btn--active {
-  @apply text-accent bg-accent-light;
+  @apply text-foreground bg-surface-sunken;
 }
 .node-toolbar__btn--active:hover {
-  @apply bg-accent-light text-accent;
+  @apply bg-surface-sunken text-foreground;
 }
 .node-toolbar__btn--danger:hover {
-  @apply bg-red-50 text-red-500;
+  @apply bg-danger-tint text-danger;
 }
 
 .node-toolbar__btn[data-tooltip] {
@@ -136,7 +289,7 @@ body {
 }
 .node-toolbar__btn[data-tooltip]::after {
   content: attr(data-tooltip);
-  @apply absolute left-1/2 pointer-events-none text-[10px] font-normal normal-case tracking-normal text-white bg-gray-800 rounded-md px-2 py-1 opacity-0 transition-opacity whitespace-nowrap;
+  @apply absolute left-1/2 pointer-events-none text-[10px] font-normal normal-case tracking-normal text-surface bg-foreground rounded-sm px-2 py-1 opacity-0 transition-opacity whitespace-nowrap;
   transform: translateX(-50%);
   top: calc(100% + 6px);
   max-width: 220px;
@@ -148,135 +301,10 @@ body {
   @apply opacity-100;
 }
 
-/* Agent mode */
-[data-agent] .node-toolbar { @apply opacity-100 pointer-events-auto; }
-
-@theme inline {
-  --font-heading: var(--font-sans);
-  --font-sans: 'Geist Variable', sans-serif;
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --color-foreground: var(--foreground);
-  --color-background: var(--background);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+/* Agent mode: reveal hover-only affordances. */
+[data-agent] .node-toolbar {
+  @apply opacity-100 pointer-events-auto;
 }
-
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-}
-
-@layer base {
-  * {
-    @apply outline-ring/50;
-  }
-}
-
-/* Restore project theme tokens overridden by shadcn's @theme inline block above. */
-@theme {
-  --color-accent: #4285f4;
-}
-
-/* Keep the project's Inter font instead of shadcn's Geist override. */
-body {
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background-color: var(--color-surface);
-  color: theme(colors.gray.900);
+[data-agent] .node-hover-action {
+  @apply !opacity-100;
 }

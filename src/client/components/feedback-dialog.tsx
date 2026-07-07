@@ -106,27 +106,27 @@ export function FeedbackDialog({ open, onOpenChange, generation, onSubmitted }: 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Top-left: original prompt */}
             <div className="flex flex-col">
-              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Original prompt</div>
-              <pre className="flex-1 text-[11px] p-2 rounded bg-surface-card border border-border-dim text-gray-600 max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">{generation.prompt}</pre>
+              <div className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-1">Original prompt</div>
+              <pre className="flex-1 text-[11px] p-2 rounded-md bg-surface-sunken border border-border text-muted max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">{generation.prompt}</pre>
             </div>
 
             {/* Top-right: reference inputs */}
             <div className="flex flex-col">
-              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">
+              <div className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-1">
                 Reference inputs (will be resent)
-                {loadingSnapshot && <span className="ml-2 text-gray-300 normal-case">loading…</span>}
+                {loadingSnapshot && <span className="ml-2 text-faint normal-case">loading…</span>}
               </div>
               {referenceImages.length > 0 ? (
-                <div className="flex flex-wrap gap-2 p-2 rounded bg-surface-card border border-border-dim min-h-[100px]">
+                <div className="flex flex-wrap gap-2 p-2 rounded-md bg-surface-sunken border border-border min-h-[100px]">
                   {referenceImages.map((url, idx) => (
                     <div key={idx} className="shrink-0 flex flex-col items-center gap-1">
-                      <img src={url} alt={referenceLabels[idx]} className="block w-20 h-20 object-cover rounded border border-border-dim bg-gray-50" />
-                      <span className="text-[9px] text-gray-500 truncate max-w-[80px]" title={referenceLabels[idx]}>{referenceLabels[idx]}</span>
+                      <img src={url} alt={referenceLabels[idx]} className="block w-20 h-20 object-cover rounded-md border border-border bg-surface-sunken" />
+                      <span className="text-[9px] text-muted truncate max-w-[80px]" title={referenceLabels[idx]}>{referenceLabels[idx]}</span>
                     </div>
                   ))}
                 </div>
               ) : !loadingSnapshot ? (
-                <div className="flex-1 text-[11px] text-gray-400 italic flex items-center justify-center p-3 rounded bg-surface-card border border-dashed border-border-dim">
+                <div className="flex-1 text-[11px] text-faint italic flex items-center justify-center p-3 rounded-md bg-surface-sunken border border-dashed border-border">
                   No upstream images — the generate step ran from text-only inputs.
                 </div>
               ) : null}
@@ -134,9 +134,9 @@ export function FeedbackDialog({ open, onOpenChange, generation, onSubmitted }: 
 
             {/* Bottom-left: feedback textarea */}
             <div className="flex flex-col">
-              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Your feedback</div>
+              <div className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-1">Your feedback</div>
               <textarea
-                className="flex-1 min-h-[180px] w-full bg-surface-card border border-border-dim rounded text-gray-800 text-sm p-3 outline-none focus:border-accent resize-none"
+                className="flex-1 min-h-[180px] w-full bg-surface-sunken border border-border rounded-sm text-foreground text-sm p-3 outline-none focus:border-ring resize-none"
                 placeholder="What would you like to change? e.g. 'make the jacket navy', 'remove the logo on the chest'"
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
@@ -146,20 +146,20 @@ export function FeedbackDialog({ open, onOpenChange, generation, onSubmitted }: 
 
             {/* Bottom-right: generated image */}
             <div className="flex flex-col">
-              <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Generated output</div>
+              <div className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-1">Generated output</div>
               {generation.image_url ? (
-                <img src={generation.image_url} alt={generation.prompt} className="block w-full max-h-[260px] object-contain rounded border border-border-dim bg-gray-50" />
+                <img src={generation.image_url} alt={generation.prompt} className="block w-full max-h-[260px] object-contain rounded-md border border-border bg-surface-sunken" />
               ) : (
-                <div className="flex-1 text-[11px] text-gray-400 italic flex items-center justify-center p-3 rounded bg-surface-card border border-dashed border-border-dim">No image.</div>
+                <div className="flex-1 text-[11px] text-faint italic flex items-center justify-center p-3 rounded-md bg-surface-sunken border border-dashed border-border">No image.</div>
               )}
             </div>
 
             {!generation.run_id && (
-              <div className="md:col-span-2 text-[11px] p-2 rounded bg-amber-50 text-amber-700">
+              <div className="md:col-span-2 text-[11px] p-2 rounded-sm bg-warning-tint text-warning">
                 This generation predates run snapshots — load not possible. Re-run the workflow from the canvas to create a new snapshot you can iterate on.
               </div>
             )}
-            {error && <div className="md:col-span-2 text-[12px] p-2 rounded bg-red-50 text-red-500 break-words">{error}</div>}
+            {error && <div className="md:col-span-2 text-[12px] p-2 rounded-sm bg-danger-tint text-danger break-words">{error}</div>}
           </div>
         )}
         <DialogFooter>

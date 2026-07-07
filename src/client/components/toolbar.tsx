@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Play } from "lucide-react";
 import { useWorkflow } from "../context";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -13,18 +14,18 @@ export function Toolbar({ workflowView, onWorkflowViewChange }: Props) {
 
   const tabClass = (active: boolean) =>
     `px-3 py-1.5 text-xs font-semibold cursor-pointer transition-all ${
-      active ? "bg-white text-gray-900" : "bg-transparent text-gray-500 hover:text-gray-700"
+      active ? "bg-surface-sunken text-foreground" : "bg-transparent text-muted hover:text-foreground"
     }`;
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 bg-white border-b border-border-dim shrink-0">
+    <div className="flex items-center justify-between px-4 py-2 bg-surface border-b border-border shrink-0">
       <div className="flex items-center gap-3">
         {activeWorkflow && (
-          <span className="text-sm font-semibold text-gray-900">{activeWorkflow.name}</span>
+          <span className="text-sm font-semibold text-foreground">{activeWorkflow.name}</span>
         )}
       </div>
       <div className="flex items-center gap-3">
-        <div className="inline-flex border border-border-dim rounded-lg overflow-hidden">
+        <div className="inline-flex border border-border rounded-sm overflow-hidden">
           <button className={tabClass(workflowView === "canvas")} onClick={() => onWorkflowViewChange("canvas")}>
             Canvas
           </button>
@@ -33,22 +34,22 @@ export function Toolbar({ workflowView, onWorkflowViewChange }: Props) {
           </button>
         </div>
         <button
-          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold border border-border-dim cursor-pointer transition-all bg-white text-gray-700 hover:bg-surface-card disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-sm text-xs font-semibold border border-border cursor-pointer transition-all bg-surface text-foreground hover:bg-surface-sunken disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={saveWorkflow}
           disabled={!activeWorkflow}
         >
           Save
         </button>
         <button
-          className="inline-flex items-center gap-1.5 px-5 py-1.5 rounded-lg text-xs font-semibold border-none cursor-pointer transition-all bg-accent text-white hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center gap-1.5 px-5 py-1.5 rounded-sm text-xs font-semibold border-none cursor-pointer transition-all bg-primary text-on-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={executeWorkflow}
           disabled={!activeWorkflow || executing}
         >
-          {executing ? (<><span className="spinner !border-white/30 !border-t-white" /> Running...</>) : "▶ Execute"}
+          {executing ? (<><span className="spinner !border-white/30 !border-t-white" /> Running...</>) : (<><Play className="size-3.5" /> Execute</>)}
         </button>
         {lastRunResults.length > 0 && (
           <button
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-border-dim cursor-pointer bg-white text-gray-700 hover:bg-surface-card"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-xs font-semibold border border-border cursor-pointer bg-surface text-foreground hover:bg-surface-sunken"
             onClick={() => setShowResults(true)}
             title="Reopen the most recent run's results"
           >
@@ -64,23 +65,23 @@ export function Toolbar({ workflowView, onWorkflowViewChange }: Props) {
           </DialogHeader>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
             {lastRunResults.map((r) => (
-              <div key={r.nodeId} className="border border-border-dim rounded-lg p-3 bg-surface-card">
+              <div key={r.nodeId} className="border border-border rounded-md p-3 bg-surface-sunken">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-gray-700">{r.label}</span>
-                  <span className="text-[10px] text-gray-400 uppercase tracking-wide">{r.type}</span>
+                  <span className="text-xs font-semibold text-foreground">{r.label}</span>
+                  <span className="text-[10px] text-muted uppercase tracking-wide">{r.type}</span>
                 </div>
                 {r.imageUrl && (
-                  <img className="block w-full rounded border border-border-dim mb-2" src={r.imageUrl} alt={r.label} />
+                  <img className="block w-full rounded-sm border border-border mb-2" src={r.imageUrl} alt={r.label} />
                 )}
                 {r.imageUrls && r.imageUrls.length > 0 && (
                   <div className="grid grid-cols-2 gap-1 mb-2">
                     {r.imageUrls.map((u, i) => (
-                      <img key={i} className="block w-full aspect-square object-cover rounded border border-border-dim" src={u} alt={`${r.label} ${i + 1}`} />
+                      <img key={i} className="block w-full aspect-square object-cover rounded-sm border border-border" src={u} alt={`${r.label} ${i + 1}`} />
                     ))}
                   </div>
                 )}
                 {r.text && (
-                  <pre className="text-[11px] p-2 rounded bg-white border border-border-dim text-gray-700 max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">{r.text}</pre>
+                  <pre className="text-[11px] p-2 rounded-sm bg-surface border border-border text-muted max-h-[200px] overflow-y-auto whitespace-pre-wrap break-words">{r.text}</pre>
                 )}
               </div>
             ))}

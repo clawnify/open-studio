@@ -2,7 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { initDB, query, get, run } from "./db.js";
 import { initUploads, putUpload, getUpload, deleteUpload, readUploadAsBase64DataUrl } from "./uploads.js";
 
-type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: string; FAL_API_KEY: string; OPENAI_API_KEY?: string } };
+type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: string; FAL_API_KEY: string; OPENAI_API_KEY?: string; ANTHROPIC_API_KEY?: string } };
 
 const app = new OpenAPIHono<Env>();
 // Public sub-app — every route here MUST be registered with publicApp.openapi(...)
@@ -36,15 +36,15 @@ function ensureSchema(db: D1Database): Promise<void> {
   schemaReady = (async () => {
     const statements: string[] = [
       `CREATE TABLE IF NOT EXISTS workflow_runs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        workflow_id INTEGER NOT NULL,
+        id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
         snapshot TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         completed_at TEXT
       )`,
       `CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)`,
-      `ALTER TABLE generations ADD COLUMN run_id INTEGER`,
+      `ALTER TABLE generations ADD COLUMN run_id TEXT`,
       `CREATE INDEX IF NOT EXISTS idx_generations_run ON generations(run_id)`,
     ];
     for (const sql of statements) {
@@ -63,7 +63,7 @@ function ensureSchema(db: D1Database): Promise<void> {
 // ── Schemas ──────────────────────────────────────────────────────────
 
 const WorkflowSchema = z.object({
-  id: z.number(),
+  id: z.string(),
   name: z.string(),
   nodes: z.string(),
   edges: z.string(),
@@ -119,11 +119,12 @@ const createWorkflow = createRoute({
 
 app.openapi(createWorkflow, async (c) => {
   const { name } = c.req.valid("json");
-  const result = await run(
-    "INSERT INTO workflows (name) VALUES (?)",
-    [name || "Untitled Workflow"],
+  const id = crypto.randomUUID();
+  await run(
+    "INSERT INTO workflows (id, name) VALUES (?, ?)",
+    [id, name || "Untitled Workflow"],
   );
-  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [result.lastInsertRowid]);
+  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [id]);
   return c.json(row!, 200);
 });
 
@@ -206,11 +207,12 @@ app.openapi(duplicateWorkflow, async (c) => {
     // If parsing fails, fall back to the raw nodes string — duplicate still works.
   }
 
-  const result = await run(
-    "INSERT INTO workflows (name, nodes, edges, viewport) VALUES (?, ?, ?, ?)",
-    [`${existing.name} (Copy)`, cleanedNodes, existing.edges, existing.viewport],
+  const newId = crypto.randomUUID();
+  await run(
+    "INSERT INTO workflows (id, name, nodes, edges, viewport) VALUES (?, ?, ?, ?, ?)",
+    [newId, `${existing.name} (Copy)`, cleanedNodes, existing.edges, existing.viewport],
   );
-  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [result.lastInsertRowid]);
+  const row = await get<z.infer<typeof WorkflowSchema>>("SELECT * FROM workflows WHERE id = ?", [newId]);
   return c.json(row!, 200);
 });
 
@@ -280,6 +282,29 @@ const OPENAI_DIRECT_MODELS = new Set([
   "openai/gpt-image-2",
   "openai/gpt-image-2-2026-04-21",
 ]);
+
+// fal.ai text-to-image models routed directly to fal.run (when FAL_API_KEY is
+// set). All entries share the FLUX input schema (prompt + image_size enum +
+// num_images + output_format) so a single request builder covers them — adding
+// another FLUX-schema model is one line here. These are text-to-image only;
+// image editing (reference images) stays on the Gemini/OpenAI paths.
+const FAL_IMAGE_MODELS = new Map<string, string>([
+  ["fal-ai/flux/schnell", "FLUX.1 [schnell] (fal)"],
+  ["fal-ai/flux/dev", "FLUX.1 [dev] (fal)"],
+  ["fal-ai/flux-pro/v1.1", "FLUX1.1 [pro] (fal)"],
+]);
+
+/** Map an aspect ratio to fal.ai's named `image_size` enum (always valid). */
+function falImageSize(aspectRatio: string): string {
+  const [aw, ah] = aspectRatio.split(":").map(Number);
+  if (!aw || !ah) return "square_hd";
+  const ratio = aw / ah;
+  if (ratio > 1.5) return "landscape_16_9";
+  if (ratio > 1.05) return "landscape_4_3";
+  if (ratio < 0.67) return "portrait_16_9";
+  if (ratio < 0.95) return "portrait_4_3";
+  return "square_hd";
+}
 
 /**
  * Map an aspect ratio to one of the four sizes `/v1/images/edits` accepts —
@@ -530,6 +555,208 @@ async function editImageOpenAI(
   return { images: await uploadOpenAIImages(data) };
 }
 
+/** Call a fal.ai FLUX-schema text-to-image model and re-host results in R2. */
+async function generateImageFal(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  aspectRatio: string,
+): Promise<{ images: Array<{ url: string }> }> {
+  const res = await fetchWith5xxRetry(`https://fal.run/${model}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+      image_size: falImageSize(aspectRatio),
+      num_images: 1,
+      output_format: "png",
+    }),
+  });
+
+  const rawText = await res.text();
+  if (!res.ok) {
+    throw new Error(`fal.ai error: ${summarizeUpstreamError(res.status, rawText)}`);
+  }
+  let data: { images?: Array<{ url?: string }> };
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error(`fal.ai returned non-JSON (status ${res.status}): ${rawText.slice(0, 400)}`);
+  }
+
+  // Download + re-host each returned image in R2 so URLs are stable + same-origin.
+  const images: Array<{ url: string }> = [];
+  for (const img of data.images || []) {
+    if (!img.url) continue;
+    try {
+      const imgData = await (await fetch(img.url)).arrayBuffer();
+      const filename = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
+      images.push({ url: await putUpload(filename, imgData, "image/png") });
+    } catch {
+      images.push({ url: img.url });
+    }
+  }
+  return { images };
+}
+
+/** Call OpenRouter's chat-completions image path and re-host results in R2. */
+async function generateImageOpenRouter(
+  apiKey: string,
+  params: { model: string; prompt: string; aspect_ratio: string; image_size: string; input_images?: string[] },
+  opts?: { onRateLimit?: () => void },
+): Promise<{ images: Array<{ url: string }>; text?: string }> {
+  const { model, prompt, aspect_ratio, image_size, input_images } = params;
+  const modalities = IMAGE_ONLY_MODELS.has(model) ? ["image"] : ["image", "text"];
+
+  const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  if (input_images?.length) {
+    for (const imgUrl of input_images) {
+      let url = imgUrl;
+      if (imgUrl.startsWith("/api/uploads/")) {
+        const filename = imgUrl.replace("/api/uploads/", "");
+        const dataUrl = await readUploadAsBase64DataUrl(filename);
+        if (dataUrl) url = dataUrl;
+      }
+      content.push({ type: "image_url", image_url: { url } });
+    }
+  }
+  content.push({ type: "text", text: prompt });
+
+  // Content-level retry: OpenRouter occasionally returns 200 OK with an HTML
+  // Cloudflare error page (or wraps one inside message.content). fetchWithRetry
+  // only retries on 5xx, so this outer loop re-fires on HTML/unparseable bodies.
+  const MAX_CONTENT_ATTEMPTS = 3;
+  let lastError: Error | null = null;
+  let data: {
+    choices?: Array<{ message?: { content?: string; images?: Array<{ image_url: { url: string } }> } }>;
+  } | null = null;
+  for (let attempt = 0; attempt < MAX_CONTENT_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://clawnify.com",
+          "X-Title": "Clawnify",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content }],
+          modalities,
+          image_config: { aspect_ratio, image_size },
+        }),
+      }, { onRateLimit: opts?.onRateLimit });
+
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`OpenRouter error: ${summarizeUpstreamError(response.status, err)}`);
+      }
+
+      const rawText = await response.text();
+      if (looksLikeHtml(rawText)) {
+        throw new Error("OpenRouter returned an HTML page instead of JSON — retrying.");
+      }
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(`OpenRouter returned non-JSON (status ${response.status}, ${rawText.length} bytes): ${rawText.slice(0, 400)}`);
+      }
+      const innerContent = data?.choices?.[0]?.message?.content || "";
+      if (looksLikeHtml(innerContent)) {
+        throw new Error("Model content was an HTML page — retrying.");
+      }
+      break; // success
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      data = null;
+      if (attempt < MAX_CONTENT_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
+  }
+  if (!data) {
+    throw lastError || new Error("OpenRouter generate failed after retries");
+  }
+
+  const message = data.choices?.[0]?.message;
+  const images: Array<{ url: string }> = [];
+  for (const img of message?.images || []) {
+    const remoteUrl = img.image_url.url;
+    try {
+      let bytesBuf: ArrayBuffer;
+      if (remoteUrl.startsWith("data:")) {
+        const base64 = remoteUrl.split(",")[1];
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        bytesBuf = bytes.buffer;
+      } else {
+        bytesBuf = await (await fetch(remoteUrl)).arrayBuffer();
+      }
+      const filename = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
+      images.push({ url: await putUpload(filename, bytesBuf, "image/png") });
+    } catch {
+      images.push({ url: remoteUrl });
+    }
+  }
+  return { images, text: message?.content || undefined };
+}
+
+/**
+ * Single image-generation dispatcher shared by the per-node `/api/generate`
+ * route and the v1 batch executor, so provider routing lives in exactly one
+ * place. Order: OpenAI-direct allowlist → fal.ai text-to-image → OpenRouter
+ * (the default for every other model). Throws on missing keys / unsupported
+ * combinations so callers surface a clear error.
+ */
+async function routeImageGeneration(
+  env: Env["Bindings"],
+  params: {
+    model: string;
+    prompt: string;
+    aspect_ratio: string;
+    image_size: string;
+    quality?: "auto" | "low" | "medium" | "high";
+    input_images?: string[];
+  },
+  opts?: { onRateLimit?: () => void },
+): Promise<{ images: Array<{ url: string }>; text?: string }> {
+  const { model, prompt, aspect_ratio, image_size, quality, input_images } = params;
+
+  if (OPENAI_DIRECT_MODELS.has(model)) {
+    if (!env.OPENAI_API_KEY) {
+      throw new Error(`Model ${model} requires OPENAI_API_KEY to be configured in the app's environment. Set it in the Clawnify dashboard, or pick a different model.`);
+    }
+    const openaiModel = model.replace(/^openai\//, "");
+    return input_images && input_images.length > 0
+      ? await editImageOpenAI(env.OPENAI_API_KEY, openaiModel, prompt, input_images, aspect_ratio, image_size, quality)
+      : await generateImageOpenAI(env.OPENAI_API_KEY, openaiModel, prompt, aspect_ratio, image_size, quality);
+  }
+
+  if (FAL_IMAGE_MODELS.has(model)) {
+    if (!env.FAL_API_KEY) {
+      throw new Error(`Model ${model} requires FAL_API_KEY to be configured in the app's environment. Set it in the Clawnify dashboard, or pick a different model.`);
+    }
+    if (input_images && input_images.length > 0) {
+      throw new Error(`${FAL_IMAGE_MODELS.get(model)} is text-to-image only — remove the reference image, or use a Gemini / GPT Image model for image editing.`);
+    }
+    return await generateImageFal(env.FAL_API_KEY, model, prompt, aspect_ratio);
+  }
+
+  if (!env.OPENROUTER_API_KEY) {
+    throw new Error("OPENROUTER_API_KEY env variable not set");
+  }
+  return await generateImageOpenRouter(
+    env.OPENROUTER_API_KEY,
+    { model, prompt, aspect_ratio, image_size, input_images },
+    opts,
+  );
+}
+
 const generateImage = createRoute({
   method: "post",
   path: "/api/generate",
@@ -567,149 +794,13 @@ const generateImage = createRoute({
 
 app.openapi(generateImage, async (c) => {
   const { prompt, model, aspect_ratio, image_size, quality, input_images } = c.req.valid("json");
-  const apiKey = c.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    return c.json({ error: "OPENROUTER_API_KEY env variable not set" }, 500);
-  }
-
-  // OpenAI-direct-only models: surface a clear error if the key isn't set
-  // rather than letting the request fall through to OpenRouter (which doesn't
-  // host these snapshots and would return a generic "not a valid model ID").
-  if (OPENAI_DIRECT_MODELS.has(model) && !c.env.OPENAI_API_KEY) {
-    return c.json({
-      error: `Model ${model} requires OPENAI_API_KEY to be configured in the app's environment. Set it in the Clawnify dashboard, or pick a different model.`,
-    }, 500);
-  }
-
-  // Route to OpenAI direct when the model is in our explicit allowlist and
-  // OPENAI_API_KEY is set. Picks /images/edits when input_images is non-empty,
-  // /images/generations otherwise.
-  if (c.env.OPENAI_API_KEY && OPENAI_DIRECT_MODELS.has(model)) {
-    try {
-      const openaiModel = model.replace(/^openai\//, "");
-      const result = input_images && input_images.length > 0
-        ? await editImageOpenAI(
-            c.env.OPENAI_API_KEY, openaiModel, prompt, input_images,
-            aspect_ratio, image_size, quality,
-          )
-        : await generateImageOpenAI(
-            c.env.OPENAI_API_KEY, openaiModel, prompt,
-            aspect_ratio, image_size, quality,
-          );
-      return c.json(result, 200);
-    } catch (err) {
-      return c.json({ error: String(err) }, 500);
-    }
-  }
-
   try {
-    const modalities = IMAGE_ONLY_MODELS.has(model) ? ["image"] : ["image", "text"];
-
-    const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
-    if (input_images?.length) {
-      for (const imgUrl of input_images) {
-        let url = imgUrl;
-        if (imgUrl.startsWith("/api/uploads/")) {
-          const filename = imgUrl.replace("/api/uploads/", "");
-          const dataUrl = await readUploadAsBase64DataUrl(filename);
-          if (dataUrl) url = dataUrl;
-        }
-        content.push({ type: "image_url", image_url: { url } });
-      }
-    }
-    content.push({ type: "text", text: prompt });
-
-    // Content-level retry: OpenRouter occasionally returns 200 OK with an HTML
-    // Cloudflare error page (or wraps one inside message.content). fetchWithRetry
-    // only retries on 5xx, so we wrap with an outer loop that re-fires when we
-    // see HTML or unparseable bodies. Mirror of the runAnalyze pattern.
-    const MAX_CONTENT_ATTEMPTS = 3;
-    let lastError: Error | null = null;
-    let data: {
-      choices?: Array<{
-        message?: {
-          content?: string;
-          images?: Array<{ image_url: { url: string } }>;
-        };
-      }>;
-    } | null = null;
-    for (let attempt = 0; attempt < MAX_CONTENT_ATTEMPTS; attempt++) {
-      try {
-        const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://clawnify.com",
-            "X-Title": "Clawnify",
-          },
-          body: JSON.stringify({
-            model,
-            messages: [{ role: "user", content }],
-            modalities,
-            image_config: { aspect_ratio, image_size },
-          }),
-        });
-
-        if (!response.ok) {
-          const err = await response.text();
-          throw new Error(`OpenRouter error: ${summarizeUpstreamError(response.status, err)}`);
-        }
-
-        const rawText = await response.text();
-        if (looksLikeHtml(rawText)) {
-          throw new Error("OpenRouter returned an HTML page instead of JSON — retrying.");
-        }
-        try {
-          data = JSON.parse(rawText);
-        } catch {
-          throw new Error(`OpenRouter returned non-JSON (status ${response.status}, ${rawText.length} bytes): ${rawText.slice(0, 400)}`);
-        }
-        const innerContent = data?.choices?.[0]?.message?.content || "";
-        if (looksLikeHtml(innerContent)) {
-          throw new Error("Model content was an HTML page — retrying.");
-        }
-        break; // success
-      } catch (e) {
-        lastError = e instanceof Error ? e : new Error(String(e));
-        data = null;
-        if (attempt < MAX_CONTENT_ATTEMPTS - 1) {
-          await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
-        }
-      }
-    }
-    if (!data) {
-      return c.json({ error: lastError?.message || "OpenRouter generate failed after retries" }, 500);
-    }
-
-    const message = data.choices?.[0]?.message;
-
-    const images: Array<{ url: string }> = [];
-    for (const img of message?.images || []) {
-      const remoteUrl = img.image_url.url;
-      try {
-        let bytesBuf: ArrayBuffer;
-        if (remoteUrl.startsWith("data:")) {
-          const base64 = remoteUrl.split(",")[1];
-          const binary = atob(base64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          bytesBuf = bytes.buffer;
-        } else {
-          const imgRes = await fetch(remoteUrl);
-          bytesBuf = await imgRes.arrayBuffer();
-        }
-        const filename = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
-        const url = await putUpload(filename, bytesBuf, "image/png");
-        images.push({ url });
-      } catch {
-        images.push({ url: remoteUrl });
-      }
-    }
-
-    return c.json({ images, text: message?.content || undefined }, 200);
+    const result = await routeImageGeneration(c.env, {
+      model, prompt, aspect_ratio, image_size, quality, input_images,
+    });
+    return c.json(result, 200);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
 
@@ -725,7 +816,7 @@ const listModels = createRoute({
           schema: z.array(z.object({
             id: z.string(),
             name: z.string(),
-            provider: z.enum(["openrouter", "openai"]).optional(),
+            provider: z.enum(["openrouter", "openai", "fal"]).optional(),
           })),
         },
       },
@@ -741,12 +832,14 @@ app.get("/api/features", (c) => {
     openrouter: !!c.env.OPENROUTER_API_KEY,
     openai: !!c.env.OPENAI_API_KEY,
     fal: !!c.env.FAL_API_KEY,
+    anthropic: !!c.env.ANTHROPIC_API_KEY,
   }, 200);
 });
 
 app.openapi(listModels, async (c) => {
   const hasOpenRouter = !!c.env.OPENROUTER_API_KEY;
   const hasOpenAI = !!c.env.OPENAI_API_KEY;
+  const hasFal = !!c.env.FAL_API_KEY;
   const baseModels: Array<{ id: string; name: string }> = [
     { id: "google/gemini-3.1-flash-image-preview", name: "Gemini 3.1 Flash Image" },
     { id: "google/gemini-3-pro-image-preview", name: "Gemini 3 Pro Image" },
@@ -765,14 +858,20 @@ app.openapi(listModels, async (c) => {
   const models = baseModels
     .map((m) => ({
       ...m,
-      provider: (OPENAI_DIRECT_MODELS.has(m.id) ? "openai" : "openrouter") as "openai" | "openrouter",
+      provider: (OPENAI_DIRECT_MODELS.has(m.id) ? "openai" : "openrouter") as "openai" | "openrouter" | "fal",
     }))
     .filter((m) => (m.provider === "openai" ? hasOpenAI : hasOpenRouter));
-  return c.json(models, 200);
+  const falModels = hasFal
+    ? Array.from(FAL_IMAGE_MODELS.entries()).map(([id, name]) => ({ id, name, provider: "fal" as const }))
+    : [];
+  return c.json([...models, ...falModels], 200);
 });
 
 // ── Analyze (vision → text/JSON) ─────────────────────────────────────
 
+// Curated OpenRouter vision aliases (the aggregator stays curated — live-listing
+// its ~300 models would be noise). Direct providers with their own key are
+// listed live from their catalog API instead (see listAnthropicModels).
 const ANALYZE_MODELS = [
   { id: "~google/gemini-flash-latest", name: "Gemini Flash (latest)" },
   { id: "~google/gemini-pro-latest", name: "Gemini Pro (latest)" },
@@ -780,7 +879,50 @@ const ANALYZE_MODELS = [
   { id: "~openai/gpt-latest", name: "GPT (latest)" },
 ] as const;
 
-app.get("/api/analyze-models", (c) => c.json(ANALYZE_MODELS, 200));
+/**
+ * List Claude models live from Anthropic's own catalog API — the same pattern
+ * the Clawnify dashboard's model picker uses (server-side so the key never
+ * reaches the browser). Normalizes to the shared {id, name, provider} shape.
+ */
+async function listAnthropicModels(
+  apiKey: string,
+): Promise<Array<{ id: string; name: string; provider: "anthropic" }>> {
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/models?limit=100", {
+      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { data?: Array<{ id: string; display_name?: string }> };
+    return (data.data || []).map((m) => ({
+      id: m.id,
+      name: m.display_name || m.id,
+      provider: "anthropic" as const,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Prefer a balanced Claude for prompt refinement; fall back to the first model. */
+function pickRefineClaude(models: Array<{ id: string }>): string | null {
+  if (models.length === 0) return null;
+  const pref = ["sonnet", "haiku", "opus"];
+  for (const tier of pref) {
+    const hit = models.find((m) => m.id.toLowerCase().includes(tier));
+    if (hit) return hit.id;
+  }
+  return models[0].id;
+}
+
+app.get("/api/analyze-models", async (c) => {
+  const models: Array<{ id: string; name: string; provider: "openrouter" | "anthropic" }> = [
+    ...ANALYZE_MODELS.map((m) => ({ ...m, provider: "openrouter" as const })),
+  ];
+  if (c.env.ANTHROPIC_API_KEY) {
+    models.push(...(await listAnthropicModels(c.env.ANTHROPIC_API_KEY)));
+  }
+  return c.json(models, 200);
+});
 
 /**
  * Retry-on-429 wrapper. Honors `Retry-After` header (seconds) when present;
@@ -927,10 +1069,91 @@ async function runAnalyze(
   throw lastError || new Error("Unknown error in runAnalyze");
 }
 
-app.post("/api/analyze", async (c) => {
-  const apiKey = c.env.OPENROUTER_API_KEY;
-  if (!apiKey) return c.json({ error: "OPENROUTER_API_KEY not set" }, 500);
+/** Vision analyze via Anthropic's Messages API (direct, not through OpenRouter). */
+async function runAnalyzeAnthropic(
+  apiKey: string,
+  prompt: string,
+  model: string,
+  inputImages: string[],
+  outputFormat: "json" | "text",
+): Promise<{ result: string }> {
+  const content: Array<Record<string, unknown>> = [];
+  for (const imgUrl of inputImages) {
+    let dataUrl: string | null = null;
+    if (imgUrl.startsWith("/api/uploads/")) {
+      dataUrl = await readUploadAsBase64DataUrl(imgUrl.replace("/api/uploads/", ""));
+    } else if (imgUrl.startsWith("data:")) {
+      dataUrl = imgUrl;
+    }
+    if (dataUrl) {
+      const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
+      if (m) {
+        content.push({ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } });
+        continue;
+      }
+    }
+    // Public URL — let Anthropic fetch it directly.
+    content.push({ type: "image", source: { type: "url", url: imgUrl } });
+  }
+  const fullPrompt = outputFormat === "json"
+    ? `${prompt}\n\nRespond with a single valid JSON object only — no prose, no markdown fences.`
+    : prompt;
+  content.push({ type: "text", text: fullPrompt });
 
+  const res = await fetchWith5xxRetry("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model, max_tokens: 2048, messages: [{ role: "user", content }] }),
+  });
+  const rawText = await res.text();
+  if (!res.ok) {
+    throw new Error(`Anthropic error: ${summarizeUpstreamError(res.status, rawText)}`);
+  }
+  let data: { content?: Array<{ type: string; text?: string }> };
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error(`Anthropic returned non-JSON (status ${res.status}): ${rawText.slice(0, 400)}`);
+  }
+  let text = (data.content || [])
+    .filter((b) => b.type === "text")
+    .map((b) => b.text || "")
+    .join("")
+    .trim();
+  if (outputFormat === "json") {
+    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  }
+  return { result: text };
+}
+
+/**
+ * Analyze dispatcher shared by /api/analyze and the v1 executor. Claude model
+ * ids (they all start with "claude") route to Anthropic's Messages API when an
+ * Anthropic key is configured; every other id goes through OpenRouter.
+ */
+async function routeAnalyze(
+  env: Env["Bindings"],
+  params: { prompt: string; model: string; inputImages: string[]; outputFormat: "json" | "text" },
+  opts?: { onRateLimit?: () => void },
+): Promise<{ result: string }> {
+  const { prompt, model, inputImages, outputFormat } = params;
+  if (model.startsWith("claude")) {
+    if (!env.ANTHROPIC_API_KEY) {
+      throw new Error(`Model ${model} requires ANTHROPIC_API_KEY to be configured. Set it in the Clawnify dashboard, or pick a different model.`);
+    }
+    return await runAnalyzeAnthropic(env.ANTHROPIC_API_KEY, prompt, model, inputImages, outputFormat);
+  }
+  if (!env.OPENROUTER_API_KEY) {
+    throw new Error("OPENROUTER_API_KEY not set");
+  }
+  return await runAnalyze(env.OPENROUTER_API_KEY, prompt, model, inputImages, outputFormat, opts?.onRateLimit);
+}
+
+app.post("/api/analyze", async (c) => {
   const { prompt, model, input_images, output_format } = await c.req.json<{
     prompt: string;
     model: string;
@@ -943,10 +1166,15 @@ app.post("/api/analyze", async (c) => {
   }
 
   try {
-    const out = await runAnalyze(apiKey, prompt, model, input_images, output_format || "text");
+    const out = await routeAnalyze(c.env, {
+      prompt,
+      model,
+      inputImages: input_images,
+      outputFormat: output_format || "text",
+    });
     return c.json(out, 200);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
 
@@ -1081,8 +1309,8 @@ app.post("/api/upscale", async (c) => {
 // ── Workflow runs (snapshots of canvas state per execute) ───────────
 
 const WorkflowRunSchema = z.object({
-  id: z.number(),
-  workflow_id: z.number(),
+  id: z.string(),
+  workflow_id: z.string(),
   snapshot: z.string().nullable(),
   status: z.string(),
   created_at: z.string(),
@@ -1091,10 +1319,11 @@ const WorkflowRunSchema = z.object({
 
 app.post("/api/runs", async (c) => {
   await ensureSchema(c.env.DB);
-  const { workflow_id } = await c.req.json<{ workflow_id: number }>();
+  const { workflow_id } = await c.req.json<{ workflow_id: string }>();
   if (!workflow_id) return c.json({ error: "workflow_id required" }, 400);
-  const result = await run("INSERT INTO workflow_runs (workflow_id) VALUES (?)", [workflow_id]);
-  const row = await get<z.infer<typeof WorkflowRunSchema>>("SELECT * FROM workflow_runs WHERE id = ?", [result.lastInsertRowid]);
+  const runId = crypto.randomUUID();
+  await run("INSERT INTO workflow_runs (id, workflow_id) VALUES (?, ?)", [runId, workflow_id]);
+  const row = await get<z.infer<typeof WorkflowRunSchema>>("SELECT * FROM workflow_runs WHERE id = ?", [runId]);
   return c.json(row!, 200);
 });
 
@@ -1138,15 +1367,15 @@ app.get("/api/runs/workflow/:workflowId", async (c) => {
 // ── Generations history ──────────────────────────────────────────────
 
 const GenerationSchema = z.object({
-  id: z.number(),
-  workflow_id: z.number(),
+  id: z.string(),
+  workflow_id: z.string(),
   node_id: z.string(),
   prompt: z.string(),
   model: z.string(),
   image_url: z.string().nullable(),
   status: z.string(),
   error: z.string().nullable(),
-  run_id: z.number().nullable().optional(),
+  run_id: z.string().nullable().optional(),
   created_at: z.string(),
 });
 
@@ -1176,14 +1405,14 @@ const saveGeneration = createRoute({
       content: {
         "application/json": {
           schema: z.object({
-            workflow_id: z.number(),
+            workflow_id: z.string(),
             node_id: z.string(),
             prompt: z.string(),
             model: z.string(),
             image_url: z.string().nullable(),
             status: z.string(),
             error: z.string().nullable().optional(),
-            run_id: z.number().nullable().optional(),
+            run_id: z.string().nullable().optional(),
           }),
         },
       },
@@ -1197,17 +1426,18 @@ const saveGeneration = createRoute({
 app.openapi(saveGeneration, async (c) => {
   await ensureSchema(c.env.DB);
   const body = c.req.valid("json");
-  const result = await run(
-    "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [body.workflow_id, body.node_id, body.prompt, body.model, body.image_url, body.status, body.error ?? null, body.run_id ?? null],
+  const id = crypto.randomUUID();
+  await run(
+    "INSERT INTO generations (id, workflow_id, node_id, prompt, model, image_url, status, error, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [id, body.workflow_id, body.node_id, body.prompt, body.model, body.image_url, body.status, body.error ?? null, body.run_id ?? null],
   );
-  const row = await get<z.infer<typeof GenerationSchema>>("SELECT * FROM generations WHERE id = ?", [result.lastInsertRowid]);
+  const row = await get<z.infer<typeof GenerationSchema>>("SELECT * FROM generations WHERE id = ?", [id]);
   return c.json(row!, 200);
 });
 
 app.delete("/api/generations/:id", async (c) => {
-  const id = Number(c.req.param("id"));
-  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "Bad id" }, 400);
   const row = await get<{ image_url: string | null }>("SELECT image_url FROM generations WHERE id = ?", [id]);
   if (!row) return c.json({ error: "Not found" }, 404);
   // Drop the R2 blob if it's ours (external URLs are left alone — they may be
@@ -1258,6 +1488,75 @@ app.post("/api/suggest-name", async (c) => {
   }
 });
 
+// ── Refine prompt (text model — prefers Claude when configured) ──────
+
+const REFINE_SYSTEM =
+  "You are a prompt engineer for text-to-image models. Rewrite the user's prompt to be vivid, specific, and well structured — subject, style, lighting, composition, and key details — while preserving their original intent. Return ONLY the improved prompt as plain text: no preamble, no quotes, no markdown.";
+
+app.post("/api/refine-prompt", async (c) => {
+  const { text, instruction } = await c.req.json<{ text: string; instruction?: string }>();
+  if (!text?.trim()) return c.json({ prompt: "" }, 200);
+  const userMsg = instruction?.trim() ? `${text}\n\nAdditional instruction: ${instruction.trim()}` : text;
+
+  try {
+    // Prefer Claude when an Anthropic key is set — chosen live from its catalog.
+    if (c.env.ANTHROPIC_API_KEY) {
+      const model = pickRefineClaude(await listAnthropicModels(c.env.ANTHROPIC_API_KEY));
+      if (model) {
+        const res = await fetchWith5xxRetry("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "x-api-key": c.env.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 600,
+            system: REFINE_SYSTEM,
+            messages: [{ role: "user", content: userMsg }],
+          }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> };
+          const prompt = (data.content || []).filter((b) => b.type === "text").map((b) => b.text || "").join("").trim();
+          if (prompt) return c.json({ prompt, model }, 200);
+        }
+      }
+    }
+
+    // Fallback: OpenRouter text model.
+    if (c.env.OPENROUTER_API_KEY) {
+      const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${c.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://clawnify.com",
+          "X-Title": "Clawnify",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-3.1-flash-lite-preview",
+          messages: [
+            { role: "system", content: REFINE_SYSTEM },
+            { role: "user", content: userMsg },
+          ],
+          max_tokens: 600,
+        }),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+        const prompt = data.choices?.[0]?.message?.content?.trim() || "";
+        if (prompt) return c.json({ prompt, model: "google/gemini-3.1-flash-lite-preview" }, 200);
+      }
+    }
+
+    return c.json({ prompt: "", error: "No text model is configured for prompt refinement." }, 200);
+  } catch (err) {
+    return c.json({ prompt: "", error: err instanceof Error ? err.message : String(err) }, 200);
+  }
+});
+
 // ── Public API (v1) ──────────────────────────────────────────────────
 
 const PublicInputSchema = z.object({
@@ -1267,7 +1566,7 @@ const PublicInputSchema = z.object({
 });
 
 const PublicWorkflowSchema = z.object({
-  id: z.number(),
+  id: z.string(),
   name: z.string(),
   inputs: z.array(PublicInputSchema),
   created_at: z.string(),
@@ -1275,7 +1574,7 @@ const PublicWorkflowSchema = z.object({
 });
 
 const ExecuteResultSchema = z.object({
-  workflow_id: z.number(),
+  workflow_id: z.string(),
   outputs: z.array(z.record(z.unknown())),
   all_nodes: z.array(z.object({
     node_id: z.string(),
@@ -1296,7 +1595,7 @@ const listPublicWorkflows = createRoute({
 });
 
 publicApp.openapi(listPublicWorkflows, async (c) => {
-  const rows = await query<{ id: number; name: string; nodes: string; created_at: string; updated_at: string }>(
+  const rows = await query<{ id: string; name: string; nodes: string; created_at: string; updated_at: string }>(
     "SELECT id, name, nodes, created_at, updated_at FROM workflows ORDER BY updated_at DESC",
   );
 
@@ -1343,10 +1642,11 @@ const executeWorkflow = createRoute({
 
 publicApp.openapi(executeWorkflow, async (c) => {
   const { id } = c.req.valid("param");
-  const apiKey = c.env.OPENROUTER_API_KEY;
-  if (!apiKey) return c.json({ error: "OPENROUTER_API_KEY not set" }, 500);
+  // Per-node routing (routeImageGeneration / routeAnalyze) validates the key
+  // each model actually needs, so no blanket OpenRouter-key guard here — a
+  // Claude-only or fal-only workflow must still run.
 
-  const wf = await get<{ id: number; nodes: string; edges: string }>(
+  const wf = await get<{ id: string; nodes: string; edges: string }>(
     "SELECT id, nodes, edges FROM workflows WHERE id = ?", [id],
   );
   if (!wf) return c.json({ error: "Workflow not found" }, 404);
@@ -1460,83 +1760,27 @@ publicApp.openapi(executeWorkflow, async (c) => {
         const aspectRatio = (node.data.aspectRatio as string) || "1:1";
         const imageSize = (node.data.imageSize as string) || "1K";
 
-        const modalities = IMAGE_ONLY_MODELS.has(model) ? ["image"] : ["image", "text"];
-        const msgContent: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
-        for (const imgUrl of inputImages) {
-          let url = imgUrl;
-          if (imgUrl.startsWith("/api/uploads/")) {
-            const dataUrl = await readUploadAsBase64DataUrl(imgUrl.replace("/api/uploads/", ""));
-            if (dataUrl) url = dataUrl;
-          }
-          msgContent.push({ type: "image_url", image_url: { url } });
-        }
-        msgContent.push({ type: "text", text: prompt });
-
         try {
-          const response = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Content-Type": "application/json",
-              "HTTP-Referer": "https://clawnify.com",
-              "X-Title": "Clawnify",
-            },
-            body: JSON.stringify({
-              model,
-              messages: [{ role: "user", content: msgContent }],
-              modalities,
-              image_config: { aspect_ratio: aspectRatio, image_size: imageSize },
-            }),
-          }, { onRateLimit: () => limiter.shrink() });
-
-          if (!response.ok) {
-            const err = await response.text();
-            results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: `OpenRouter error: ${summarizeUpstreamError(response.status, err)}` } });
-            outputs.set(nodeId, { promptText: prompt });
-            return;
-          }
-
-          const genData = (await response.json()) as {
-            choices?: Array<{ message?: { content?: string; images?: Array<{ image_url: { url: string } }> } }>;
-          };
-          const message = genData.choices?.[0]?.message;
-
-          let imageUrl = "";
-          for (const img of message?.images || []) {
-            const remoteUrl = img.image_url.url;
-            try {
-              let imgData: ArrayBuffer;
-              if (remoteUrl.startsWith("data:")) {
-                const b64 = remoteUrl.split(",")[1];
-                const bin = atob(b64);
-                const bytes = new Uint8Array(bin.length);
-                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                imgData = bytes.buffer;
-              } else {
-                imgData = await (await fetch(remoteUrl)).arrayBuffer();
-              }
-              const fname = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.png`;
-              imageUrl = await putUpload(fname, imgData, "image/png");
-            } catch {
-              imageUrl = remoteUrl;
-            }
-            break; // take first image
-          }
-
-          outputs.set(nodeId, { imageUrl, text: message?.content || undefined, promptText: prompt });
-          results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { imageUrl, text: message?.content || undefined } });
+          const result = await routeImageGeneration(
+            c.env,
+            { model, prompt, aspect_ratio: aspectRatio, image_size: imageSize, input_images: inputImages },
+            { onRateLimit: () => limiter.shrink() },
+          );
+          const imageUrl = result.images[0]?.url || "";
+          outputs.set(nodeId, { imageUrl, text: result.text, promptText: prompt });
+          results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { imageUrl, text: result.text } });
 
           // Save generation
           await run(
-            "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [wf.id, nodeId, prompt, model, imageUrl || null, "success", null],
+            "INSERT INTO generations (id, workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [crypto.randomUUID(), wf.id, nodeId, prompt, model, imageUrl || null, "success", null],
           );
         } catch (err) {
           outputs.set(nodeId, { promptText: prompt });
           results.push({ node_id: nodeId, type: "generateImage", label: (node.data.label as string) || nodeId, output: { error: String(err) } });
           await run(
-            "INSERT INTO generations (workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [wf.id, nodeId, prompt, model, null, "error", String(err)],
+            "INSERT INTO generations (id, workflow_id, node_id, prompt, model, image_url, status, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [crypto.randomUUID(), wf.id, nodeId, prompt, model, null, "error", String(err)],
           );
         }
         break;
@@ -1562,7 +1806,11 @@ publicApp.openapi(executeWorkflow, async (c) => {
           break;
         }
         try {
-          const out = await runAnalyze(apiKey, analyzePrompt, analyzeModel, inputImages, outputFormat, () => limiter.shrink());
+          const out = await routeAnalyze(
+            c.env,
+            { prompt: analyzePrompt, model: analyzeModel, inputImages, outputFormat },
+            { onRateLimit: () => limiter.shrink() },
+          );
           outputs.set(nodeId, { text: out.result });
           results.push({ node_id: nodeId, type: "analyze", label: (node.data.label as string) || nodeId, output: { text: out.result, format: outputFormat } });
         } catch (err) {

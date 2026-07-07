@@ -161,7 +161,7 @@ export function EditImageDialog({ open, onOpenChange, sourceUrl, onResult }: Pro
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <div className="relative border border-border-dim rounded overflow-hidden bg-gray-100">
+          <div className="relative border border-border rounded-md overflow-hidden bg-surface-sunken">
             <canvas
               ref={displayCanvasRef}
               className="block max-w-full max-h-[60vh] mx-auto cursor-crosshair touch-none"
@@ -172,22 +172,22 @@ export function EditImageDialog({ open, onOpenChange, sourceUrl, onResult }: Pro
             />
             <canvas ref={maskCanvasRef} className="hidden" />
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs text-gray-700">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
             <label className="flex items-center gap-1.5">
               Brush:
               <input type="range" min={5} max={120} value={brushSize} onChange={(e) => setBrushSize(Number((e.target as HTMLInputElement).value))} />
-              <span className="text-gray-500">{brushSize}px</span>
+              <span className="text-muted">{brushSize}px</span>
             </label>
             <Button type="button" variant="outline" size="sm" onClick={clearMask}>Clear</Button>
           </div>
           <textarea
-            className="w-full bg-surface-card border border-border-dim rounded text-gray-800 text-sm p-3 outline-none focus:border-accent"
+            className="w-full bg-surface-sunken border border-border rounded-sm text-foreground text-sm p-3 outline-none focus:border-ring"
             rows={2}
             placeholder="What should appear in the painted area? e.g. 'a sleeping orange cat'"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
           />
-          {error && <div className="text-[12px] p-2 rounded bg-red-50 text-red-500 break-words">{error}</div>}
+          {error && <div className="text-[12px] p-2 rounded-sm bg-danger-tint text-danger break-words">{error}</div>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>Cancel</Button>

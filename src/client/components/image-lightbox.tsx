@@ -51,14 +51,14 @@ export function ImageLightbox({ src, filename, prompt, onClose }: Props) {
       onClick={onClose}
     >
       <img
-        className="max-w-[90vw] max-h-[90vh] object-contain cursor-default shadow-2xl"
+        className="max-w-[90vw] max-h-[90vh] object-contain cursor-default shadow-md"
         src={src}
         alt="Full size"
         onClick={(e) => e.stopPropagation()}
         draggable={false}
       />
       <button
-        className="absolute top-4 left-4 inline-flex items-center gap-1.5 text-xs text-white bg-black/70 hover:bg-black/90 border-none rounded px-3 py-1.5 cursor-pointer"
+        className="absolute top-4 left-4 inline-flex items-center gap-1.5 text-xs text-white bg-black/70 hover:bg-black/90 border-none rounded-sm px-3 py-1.5 cursor-pointer"
         onClick={(e) => { e.stopPropagation(); onClose(); }}
         title="Close (Esc)"
       >
@@ -67,7 +67,7 @@ export function ImageLightbox({ src, filename, prompt, onClose }: Props) {
       <div className="absolute top-4 right-4 flex gap-2">
         {prompt && (
           <button
-            className="inline-flex items-center gap-1.5 text-xs text-white bg-black/70 hover:bg-black/90 border-none rounded px-3 py-1.5 cursor-pointer"
+            className="inline-flex items-center gap-1.5 text-xs text-white bg-black/70 hover:bg-black/90 border-none rounded-sm px-3 py-1.5 cursor-pointer"
             onClick={(e) => { e.stopPropagation(); copyPrompt(); }}
             title="Copy prompt"
           >
@@ -76,7 +76,7 @@ export function ImageLightbox({ src, filename, prompt, onClose }: Props) {
           </button>
         )}
         <button
-          className="inline-flex items-center gap-1.5 text-xs text-white bg-black/70 hover:bg-black/90 border-none rounded px-3 py-1.5 cursor-pointer"
+          className="inline-flex items-center gap-1.5 text-xs text-white bg-black/70 hover:bg-black/90 border-none rounded-sm px-3 py-1.5 cursor-pointer"
           onClick={(e) => { e.stopPropagation(); downloadImage(src, filename); }}
           title="Download image"
         >
@@ -84,7 +84,7 @@ export function ImageLightbox({ src, filename, prompt, onClose }: Props) {
         </button>
       </div>
       {prompt && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 max-w-[80vw] text-[11px] text-white/90 bg-black/70 rounded px-3 py-1.5 max-h-[20vh] overflow-y-auto whitespace-pre-wrap break-words cursor-default" onClick={(e) => e.stopPropagation()}>
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 max-w-[80vw] text-[11px] text-white/90 bg-black/70 rounded-sm px-3 py-1.5 max-h-[20vh] overflow-y-auto whitespace-pre-wrap break-words cursor-default" onClick={(e) => e.stopPropagation()}>
           {prompt}
         </div>
       )}

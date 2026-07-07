@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, type DragEvent, type KeyboardEvent } from "react";
+import { Sparkles, Copy } from "lucide-react";
 import { useWorkflow } from "../context";
 import { api } from "../api";
 import type { Generation } from "../types";
@@ -47,11 +48,11 @@ function JustifiedRow({ items, containerWidth, onSelect, onDragStart, onUseAsSou
         const width = item.ratio * rowHeight;
         if (item.loading) {
           return (
-            <div key={`loading-${i}`} className="relative overflow-hidden bg-surface-card shrink-0" style={{ width: `${width}px`, height: `${rowHeight}px` }}>
-              <div className="w-full h-full bg-[length:200%_100%] animate-[pulse-shimmer_1.5s_ease-in-out_infinite]" style={{ backgroundImage: "linear-gradient(110deg, #f1f3f4 30%, #e8eaed 50%, #f1f3f4 70%)" }} />
+            <div key={`loading-${i}`} className="relative overflow-hidden bg-surface-sunken shrink-0" style={{ width: `${width}px`, height: `${rowHeight}px` }}>
+              <div className="w-full h-full bg-surface-sunken animate-pulse" />
               <div className="absolute top-3 left-3">
-                <span className="px-2.5 py-1 bg-white/80 text-accent text-xs font-semibold backdrop-blur-sm flex items-center gap-1.5 shadow-sm">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                <span className="px-2.5 py-1 bg-surface/80 text-muted text-xs font-semibold backdrop-blur-sm flex items-center gap-1.5 shadow-sm">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted animate-pulse" />
                   Generating
                 </span>
               </div>
@@ -62,8 +63,8 @@ function JustifiedRow({ items, containerWidth, onSelect, onDragStart, onUseAsSou
         return (
           <div
             key={gen.id}
-            className={`relative overflow-hidden bg-surface-card cursor-pointer transition-all group shrink-0 ${
-              gen.status === "error" ? "ring-1 ring-red-500" : ""
+            className={`relative overflow-hidden bg-surface-sunken cursor-pointer transition-all group shrink-0 ${
+              gen.status === "error" ? "ring-1 ring-danger" : ""
             }`}
             style={{ width: `${width}px`, height: `${rowHeight}px` }}
             onClick={() => gen.image_url && onSelect(gen.image_url)}
@@ -73,24 +74,24 @@ function JustifiedRow({ items, containerWidth, onSelect, onDragStart, onUseAsSou
             {gen.image_url ? (
               <img className="block w-full h-full object-cover" src={gen.image_url} alt={gen.prompt} loading="lazy" />
             ) : (
-              <div className="h-full flex items-center justify-center text-center text-red-500 text-xs p-6">
+              <div className="h-full flex items-center justify-center text-center text-danger text-xs p-6">
                 <div>
                   <span>Failed</span>
-                  {gen.error && <small className="block mt-1 text-gray-400 text-[10px]">{gen.error.slice(0, 60)}</small>}
+                  {gen.error && <small className="block mt-1 text-faint text-[10px]">{gen.error.slice(0, 60)}</small>}
                 </div>
               </div>
             )}
-            <div className="absolute inset-x-0 bottom-0 pt-8 px-3 pb-3 bg-gradient-to-t from-black/60 to-transparent flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="absolute inset-x-0 bottom-0 pt-8 px-3 pb-3 bg-black/40 flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <span className="text-[11px] text-white leading-snug">{gen.prompt.slice(0, 80)}{gen.prompt.length > 80 ? "..." : ""}</span>
               <div className="flex items-center justify-between mt-1 gap-1">
                 <span className="text-[10px] text-white/60">{gen.model.split("/").pop()}</span>
                 <div className="flex items-center gap-1">
                   <button
-                    className="text-[10px] text-white/80 bg-white/15 hover:bg-white/25 border-none px-2 py-0.5 cursor-pointer transition-colors"
+                    className="inline-flex items-center gap-1 text-[10px] text-white/80 bg-white/15 hover:bg-white/25 border-none px-2 py-0.5 cursor-pointer transition-colors"
                     onClick={async (e) => { e.stopPropagation(); try { await navigator.clipboard.writeText(gen.prompt); } catch {} }}
                     title="Copy prompt"
                   >
-                    ⧉ Copy
+                    <Copy className="size-3.5" /> Copy
                   </button>
                   <button
                     className="text-[10px] text-white/80 bg-white/15 hover:bg-white/25 border-none px-2 py-0.5 cursor-pointer transition-colors"
@@ -123,7 +124,7 @@ export function QuickGenerate() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [barDragOver, setBarDragOver] = useState(false);
   const [containerWidth, setContainerWidth] = useState(0);
-  const [imageDims, setImageDims] = useState<Record<number, number>>({});
+  const [imageDims, setImageDims] = useState<Record<string, number>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -232,7 +233,7 @@ export function QuickGenerate() {
       const r = 10;
       const b = 2;
       // Draw rounded border
-      ctx.fillStyle = "#4285f4";
+      ctx.fillStyle = "#2563eb"; // ring blue
       ctx.beginPath();
       ctx.roundRect(0, 0, size, size, r);
       ctx.fill();
@@ -272,12 +273,12 @@ export function QuickGenerate() {
   }, [pendingCount, pendingRatio, generations, imageDims]);
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 relative bg-surface-secondary">
+    <div className="flex-1 flex flex-col min-h-0 relative bg-background">
       {/* Image grid */}
       <div className="flex-1 overflow-y-auto" ref={gridRef}>
         {generations.length === 0 && !generating && (
           <div className="h-full flex items-center justify-center">
-            <p className="text-gray-400 text-base">Describe the scene you imagine</p>
+            <p className="text-muted text-sm">Describe the scene you imagine</p>
           </div>
         )}
         {containerWidth > 0 && (
@@ -298,16 +299,16 @@ export function QuickGenerate() {
 
       {/* Error */}
       {error && (
-        <div className="flex items-center justify-between px-4 py-2 bg-red-50 border-t border-red-200 text-red-600 text-xs shrink-0">
+        <div className="flex items-center justify-between px-4 py-2 bg-danger-tint border-t border-border text-danger text-xs shrink-0">
           <span>{error}</span>
-          <button className="bg-transparent border-none text-red-400 text-lg cursor-pointer" onClick={() => setError(null)}>&times;</button>
+          <button className="bg-transparent border-none text-danger text-lg cursor-pointer" onClick={() => setError(null)}>&times;</button>
         </div>
       )}
 
       {/* Bottom bar */}
       <div
-        className={`shrink-0 mx-auto mb-4 w-full max-w-3xl rounded-xl border-2 bg-white shadow-lg transition-colors ${
-          barDragOver ? "border-accent bg-accent-light" : "border-border-dim"
+        className={`shrink-0 mx-auto mb-4 w-full max-w-3xl rounded-lg border-2 bg-surface shadow-md transition-colors ${
+          barDragOver ? "border-ring bg-surface-sunken" : "border-border"
         }`}
         onDragOver={(e) => { e.preventDefault(); setBarDragOver(true); }}
         onDragLeave={() => setBarDragOver(false)}
@@ -317,7 +318,7 @@ export function QuickGenerate() {
           {attachments.length > 0 && (
             <div className="flex gap-2 mb-3">
               {attachments.map((url, i) => (
-                <div key={i} className="relative w-12 h-12 rounded-lg overflow-hidden border border-border-dim group/att">
+                <div key={i} className="relative w-12 h-12 rounded-sm overflow-hidden border border-border group/att">
                   <img className="w-full h-full object-cover" src={url} alt="attachment" />
                   <button
                     className="absolute inset-0 bg-black/40 text-white border-none text-sm cursor-pointer opacity-0 group-hover/att:opacity-100 transition-opacity flex items-center justify-center"
@@ -328,7 +329,7 @@ export function QuickGenerate() {
                 </div>
               ))}
               <button
-                className="w-12 h-12 rounded-lg bg-surface-card border border-border-dim text-gray-400 text-xl cursor-pointer flex items-center justify-center transition-all hover:bg-surface-hover hover:text-gray-600"
+                className="w-12 h-12 rounded-sm bg-surface-sunken border border-border text-faint text-xl cursor-pointer flex items-center justify-center transition-all hover:bg-surface-sunken hover:text-muted"
                 onClick={() => fileRef.current?.click()}
               >
                 +
@@ -337,7 +338,7 @@ export function QuickGenerate() {
           )}
           <textarea
             ref={textareaRef}
-            className="w-full bg-transparent text-gray-900 text-sm leading-relaxed resize-none outline-none min-h-[24px] max-h-[240px] overflow-y-auto placeholder:text-gray-400 border-none p-0"
+            className="w-full bg-transparent text-foreground text-sm leading-relaxed resize-none outline-none min-h-[24px] max-h-[240px] overflow-y-auto placeholder:text-faint border-none p-0"
             placeholder="Describe the scene you imagine"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
@@ -347,30 +348,30 @@ export function QuickGenerate() {
         </div>
         <div className="flex items-center justify-between px-4 pb-3 pt-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <select className="h-8 bg-surface-card border border-border-dim rounded-full text-gray-700 text-xs font-medium px-3 cursor-pointer outline-none appearance-none transition-all hover:bg-surface-hover max-w-[180px]" value={model} onChange={(e) => setModel((e.target as HTMLSelectElement).value)}>
+            <select className="h-8 bg-surface-sunken border border-border rounded-full text-muted text-xs font-medium px-3 cursor-pointer outline-none appearance-none transition-all hover:bg-surface-sunken max-w-[180px]" value={model} onChange={(e) => setModel((e.target as HTMLSelectElement).value)}>
               {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
-            <select className="h-8 bg-surface-card border border-border-dim rounded-full text-gray-700 text-xs font-medium px-3 cursor-pointer outline-none appearance-none transition-all hover:bg-surface-hover" value={aspectRatio} onChange={(e) => setAspectRatio((e.target as HTMLSelectElement).value)}>
+            <select className="h-8 bg-surface-sunken border border-border rounded-full text-muted text-xs font-medium px-3 cursor-pointer outline-none appearance-none transition-all hover:bg-surface-sunken" value={aspectRatio} onChange={(e) => setAspectRatio((e.target as HTMLSelectElement).value)}>
               {ASPECT_RATIOS.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
-            <select className="h-8 bg-surface-card border border-border-dim rounded-full text-gray-700 text-xs font-medium px-3 cursor-pointer outline-none appearance-none transition-all hover:bg-surface-hover" value={imageSize} onChange={(e) => setImageSize((e.target as HTMLSelectElement).value)}>
+            <select className="h-8 bg-surface-sunken border border-border rounded-full text-muted text-xs font-medium px-3 cursor-pointer outline-none appearance-none transition-all hover:bg-surface-sunken" value={imageSize} onChange={(e) => setImageSize((e.target as HTMLSelectElement).value)}>
               {IMAGE_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
-            <div className="flex items-center h-8 border border-border-dim rounded-full overflow-hidden">
-              <button className="w-7 h-full bg-surface-card border-none text-gray-600 text-sm cursor-pointer flex items-center justify-center transition-colors hover:bg-surface-hover" onClick={() => setImageCount(Math.max(1, imageCount - 1))}>-</button>
-              <span className="w-7 text-center text-xs font-semibold text-gray-700">{imageCount}</span>
-              <button className="w-7 h-full bg-surface-card border-none text-gray-600 text-sm cursor-pointer flex items-center justify-center transition-colors hover:bg-surface-hover" onClick={() => setImageCount(Math.min(8, imageCount + 1))}>+</button>
+            <div className="flex items-center h-8 border border-border rounded-full overflow-hidden">
+              <button className="w-7 h-full bg-surface-sunken border-none text-muted text-sm cursor-pointer flex items-center justify-center transition-colors hover:bg-surface-sunken" onClick={() => setImageCount(Math.max(1, imageCount - 1))}>-</button>
+              <span className="w-7 text-center text-xs font-semibold text-muted">{imageCount}</span>
+              <button className="w-7 h-full bg-surface-sunken border-none text-muted text-sm cursor-pointer flex items-center justify-center transition-colors hover:bg-surface-sunken" onClick={() => setImageCount(Math.min(8, imageCount + 1))}>+</button>
             </div>
             {attachments.length === 0 && (
-              <button className="h-8 px-3 bg-surface-card border border-border-dim rounded-full text-gray-500 text-xs font-medium cursor-pointer flex items-center gap-1.5 transition-all hover:bg-surface-hover" onClick={() => fileRef.current?.click()}>+ Source</button>
+              <button className="h-8 px-3 bg-surface-sunken border border-border rounded-full text-muted text-xs font-medium cursor-pointer flex items-center gap-1.5 transition-all hover:bg-surface-sunken" onClick={() => fileRef.current?.click()}>+ Source</button>
             )}
           </div>
           <button
-            className="h-10 px-6 rounded-xl bg-generate text-white text-sm font-bold border-none cursor-pointer shrink-0 flex items-center gap-1.5 transition-all hover:bg-generate-hover disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+            className="h-10 px-6 rounded-sm bg-primary text-on-primary text-sm font-semibold border-none cursor-pointer shrink-0 flex items-center gap-1.5 transition-all hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
             onClick={generate}
             disabled={generating || !prompt.trim()}
           >
-            {generating ? <span className="spinner !border-white/30 !border-t-white" /> : <>Generate{imageCount > 1 ? ` \u2728 ${imageCount}` : ""}</>}
+            {generating ? <span className="spinner !border-white/30 !border-t-white" /> : <>Generate{imageCount > 1 && <><Sparkles className="size-4" />{imageCount}</>}</>}
           </button>
         </div>
       </div>
@@ -379,7 +380,7 @@ export function QuickGenerate() {
 
       {selectedImage && (
         <div className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center cursor-pointer" onClick={() => setSelectedImage(null)}>
-          <img className="max-w-[90vw] max-h-[90vh] object-contain cursor-default shadow-2xl" src={selectedImage} alt="Full size" onClick={(e) => e.stopPropagation()} />
+          <img className="max-w-[90vw] max-h-[90vh] object-contain cursor-default shadow-md" src={selectedImage} alt="Full size" onClick={(e) => e.stopPropagation()} />
         </div>
       )}
     </div>

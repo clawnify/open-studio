@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Handle, Position } from "@xyflow/react";
+import { Search, Maximize2 } from "lucide-react";
 import { useWorkflow } from "../../context";
 import { api } from "../../api";
 import { NodeHeader } from "./node-header";
@@ -35,14 +36,15 @@ export function AnalyzeNode({ id, data }: Props) {
     return () => { alive = false; };
   }, []);
 
-  const selectClass = "w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs py-1 px-2 outline-none cursor-pointer appearance-none focus:border-accent";
+  const selectClass = "w-full bg-surface-sunken border border-border rounded-sm text-foreground text-xs py-1 px-2 outline-none cursor-pointer appearance-none focus:border-ring";
+  const labelClass = "text-[10px] font-semibold text-muted uppercase tracking-wide";
 
   return (
     <div className={`group flow-node analyze-node status-${data.status} relative`}>
       <NodeToolbar id={id} canRerun />
-      <NodeHeader id={id} label={data.label} icon="&#128270;" bgClass="bg-amber-50" textClass="text-amber-600" />
+      <NodeHeader id={id} label={data.label} icon={Search} />
       <div className="p-2.5 flex flex-col gap-1.5">
-        <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Instruction</label>
+        <label className={labelClass}>Instruction</label>
         <div className="relative">
           <PillEditor
             value={data.prompt || ""}
@@ -52,14 +54,15 @@ export function AnalyzeNode({ id, data }: Props) {
             style={{ minHeight: "64px", maxHeight: "200px" }}
           />
           <button
-            className="nodrag absolute bottom-1.5 right-1.5 text-[10px] text-gray-400 hover:text-amber-600 bg-white/90 border border-border-dim rounded px-1.5 py-0.5 cursor-pointer transition-opacity opacity-0 group-hover:opacity-100"
+            className="node-hover-action nodrag absolute bottom-1.5 right-1.5 flex items-center gap-1 text-[10px] font-medium text-muted hover:text-foreground bg-surface/90 border border-border rounded-sm px-1.5 py-0.5 cursor-pointer transition-colors"
             onClick={() => { setDraftPrompt(data.prompt || ""); setExpanded(true); }}
             title="Expand instruction editor"
           >
-            ⤢ Expand
+            <Maximize2 className="size-3" />
+            Expand
           </button>
         </div>
-        <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Model</label>
+        <label className={labelClass}>Model</label>
         <select
           className={selectClass}
           value={data.model}
@@ -68,7 +71,7 @@ export function AnalyzeNode({ id, data }: Props) {
           {analyzeModels.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           {analyzeModels.length === 0 && <option value={data.model}>{data.model}</option>}
         </select>
-        <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Output Format</label>
+        <label className={labelClass}>Output Format</label>
         <select
           className={selectClass}
           value={data.outputFormat}
@@ -78,23 +81,23 @@ export function AnalyzeNode({ id, data }: Props) {
           <option value="json">JSON</option>
         </select>
         {data.status === "running" && (
-          <div className="flex items-center gap-1.5 text-[11px] p-1.5 rounded bg-amber-50 text-amber-600">
+          <div className="flex items-center gap-1.5 text-[11px] p-1.5 rounded-sm bg-surface-sunken text-muted">
             <span className="spinner" /> Analyzing...
           </div>
         )}
         {data.status === "error" && (
-          <div className="text-[11px] p-1.5 rounded bg-red-50 text-red-500 break-words">
+          <div className="text-[11px] p-1.5 rounded-sm bg-danger-tint text-danger break-words">
             {data.error || "Analysis failed"}
           </div>
         )}
         {data.result && (
-          <pre className="nowheel text-[11px] p-1.5 rounded bg-surface-card border border-border-dim text-gray-700 max-h-[140px] overflow-y-auto whitespace-pre-wrap break-words">
+          <pre className="nowheel text-[11px] p-1.5 rounded-sm bg-surface-sunken border border-border text-muted max-h-[140px] overflow-y-auto whitespace-pre-wrap break-words">
             {data.result}
           </pre>
         )}
       </div>
-      <Handle type="target" position={Position.Left} className="!bg-blue-500" id="image" />
-      <Handle type="source" position={Position.Right} className="!bg-amber-500" />
+      <Handle type="target" position={Position.Left} className="!bg-border-strong" id="image" />
+      <Handle type="source" position={Position.Right} className="!bg-ring" />
 
       <Dialog open={expanded} onOpenChange={setExpanded}>
         <DialogContent className="max-w-2xl">
@@ -105,7 +108,7 @@ export function AnalyzeNode({ id, data }: Props) {
             </DialogDescription>
           </DialogHeader>
           <textarea
-            className="w-full min-h-[280px] max-h-[60vh] resize-y bg-surface-card border border-border-dim rounded text-gray-800 text-sm p-3 outline-none focus:border-accent leading-relaxed"
+            className="w-full min-h-[280px] max-h-[60vh] resize-y bg-surface-sunken border border-border rounded-sm text-foreground text-sm p-3 outline-none focus:border-ring leading-relaxed"
             value={draftPrompt}
             autoFocus
             onChange={(e) => setDraftPrompt(e.target.value)}

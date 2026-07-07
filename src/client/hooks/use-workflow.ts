@@ -75,16 +75,16 @@ export function useWorkflowState(): WorkflowContextValue {
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<Edge>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [features, setFeatures] = useState<Features>({ openrouter: false, openai: false, fal: false });
+  const [features, setFeatures] = useState<Features>({ openrouter: false, openai: false, fal: false, anthropic: false });
   const [generations, setGenerations] = useState<Generation[]>([]);
   const [lastRunResults, setLastRunResults] = useState<LeafResult[]>([]);
   const [executing, setExecuting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const activeIdRef = useRef<number | null>(null);
+  const activeIdRef = useRef<string | null>(null);
   // Set by executeWorkflow so per-node /api/generations saves can tag the
   // run they belong to. Null outside a full-workflow execute.
-  const currentRunIdRef = useRef<number | null>(null);
+  const currentRunIdRef = useRef<string | null>(null);
 
   // ── Undo / Redo ──────────────────────────────────────────────────
   const undoStack = useRef<HistoryEntry[]>([]);
@@ -169,9 +169,8 @@ export function useWorkflowState(): WorkflowContextValue {
         setModels(m);
         setFeatures(feat);
         setWorkflows(wf);
-        if (wf.length > 0) {
-          await loadWorkflow(wf[0]);
-        }
+        // No auto-load: the URL (/workflows/:id) drives which workflow is
+        // active. The list + /generate render without a loaded canvas.
       } catch (e) {
         setError(String(e));
       } finally {
@@ -197,22 +196,24 @@ export function useWorkflowState(): WorkflowContextValue {
     }
   }, [setNodes, setEdges]);
 
-  const createWorkflow = useCallback(async () => {
+  const createWorkflow = useCallback(async (): Promise<Workflow | undefined> => {
     try {
       const wf = await api<Workflow>("POST", "/api/workflows", {});
       setWorkflows((prev) => [wf, ...prev]);
       await loadWorkflow(wf);
+      return wf;
     } catch (e) {
       setError(String(e));
+      return undefined;
     }
   }, [loadWorkflow]);
 
-  const selectWorkflow = useCallback(async (id: number) => {
+  const selectWorkflow = useCallback(async (id: string) => {
     const wf = workflows.find((w) => w.id === id);
     if (wf) await loadWorkflow(wf);
   }, [workflows, loadWorkflow]);
 
-  const deleteWorkflow = useCallback(async (id: number) => {
+  const deleteWorkflow = useCallback(async (id: string) => {
     try {
       await api("DELETE", `/api/workflows/${id}`);
       setWorkflows((prev) => prev.filter((w) => w.id !== id));
@@ -228,7 +229,7 @@ export function useWorkflowState(): WorkflowContextValue {
     }
   }, [setNodes, setEdges]);
 
-  const renameWorkflow = useCallback(async (id: number, name: string) => {
+  const renameWorkflow = useCallback(async (id: string, name: string) => {
     try {
       const wf = await api<Workflow>("PUT", `/api/workflows/${id}`, { name });
       setWorkflows((prev) => prev.map((w) => (w.id === id ? wf : w)));
@@ -243,7 +244,7 @@ export function useWorkflowState(): WorkflowContextValue {
    * in-memory nodes/edges; does NOT touch the persisted workflow row until
    * the user hits Save. Click a generation in the Outputs grid → this fires.
    */
-  const loadRun = useCallback(async (runId: number) => {
+  const loadRun = useCallback(async (runId: string) => {
     try {
       const r = await api<WorkflowRun>("GET", `/api/runs/${runId}`);
       if (!r.snapshot) {
@@ -270,7 +271,7 @@ export function useWorkflowState(): WorkflowContextValue {
     }
   }, []);
 
-  const deleteGeneration = useCallback(async (id: number) => {
+  const deleteGeneration = useCallback(async (id: string) => {
     setGenerations((prev) => prev.filter((g) => g.id !== id));
     try {
       await api("DELETE", `/api/generations/${id}`);
@@ -281,7 +282,7 @@ export function useWorkflowState(): WorkflowContextValue {
     }
   }, [refreshGenerations]);
 
-  const duplicateWorkflow = useCallback(async (id: number) => {
+  const duplicateWorkflow = useCallback(async (id: string) => {
     try {
       const wf = await api<Workflow>("POST", `/api/workflows/${id}/duplicate`);
       setWorkflows((prev) => [wf, ...prev]);
@@ -909,7 +910,7 @@ export function useWorkflowState(): WorkflowContextValue {
    * affecting the live workflow until the user hits Save.
    */
   const runOutputFeedback = useCallback(async (
-    runId: number,
+    runId: string,
     nodeId: string,
     feedback: string,
   ) => {

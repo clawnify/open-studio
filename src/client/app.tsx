@@ -1,24 +1,32 @@
-import { useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
+import { BrowserRouter, Routes, Route, Navigate, NavLink } from "react-router-dom";
 import { WorkflowContext } from "./context";
 import { useWorkflowState } from "./hooks/use-workflow";
-import { WorkflowCanvas } from "./components/workflow-canvas";
-import { WorkflowOutputs } from "./components/workflow-outputs";
-import { Sidebar } from "./components/sidebar";
-import { Toolbar } from "./components/toolbar";
-import { ErrorBanner } from "./components/error-banner";
+import { WorkflowEditor } from "./components/workflow-editor";
+import { WorkflowsList } from "./components/workflows-list";
 import { QuickGenerate } from "./components/quick-generate";
 
-type View = "generate" | "workflows";
+function TopNav() {
+  const linkClass = ({ isActive }: { isActive: boolean }) =>
+    `px-5 py-2.5 border-b-2 text-[13px] font-medium cursor-pointer transition-all ${
+      isActive
+        ? "text-foreground border-foreground"
+        : "text-muted border-transparent hover:text-foreground"
+    }`;
+  return (
+    <nav className="flex bg-surface border-b border-border px-3 shrink-0">
+      <NavLink to="/generate" className={linkClass}>Generate</NavLink>
+      <NavLink to="/workflows" className={linkClass}>Workflows</NavLink>
+    </nav>
+  );
+}
 
 export function App() {
   const state = useWorkflowState();
-  const [view, setView] = useState<View>("generate");
-  const [workflowView, setWorkflowView] = useState<"canvas" | "outputs">("canvas");
 
   if (state.loading) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-400 text-base">
+      <div className="flex items-center justify-center h-full text-muted text-sm">
         Loading...
       </div>
     );
@@ -27,43 +35,20 @@ export function App() {
   return (
     <WorkflowContext.Provider value={state}>
       <ReactFlowProvider>
-        <div className="flex flex-col h-full w-full">
-          <nav className="flex bg-white border-b border-border-dim px-3 shrink-0">
-            <button
-              className={`px-5 py-2.5 bg-transparent border-none border-b-2 text-[13px] font-medium cursor-pointer transition-all ${
-                view === "generate"
-                  ? "text-accent border-accent"
-                  : "text-gray-500 border-transparent hover:text-gray-700"
-              }`}
-              onClick={() => setView("generate")}
-            >
-              Generate
-            </button>
-            <button
-              className={`px-5 py-2.5 bg-transparent border-none border-b-2 text-[13px] font-medium cursor-pointer transition-all ${
-                view === "workflows"
-                  ? "text-accent border-accent"
-                  : "text-gray-500 border-transparent hover:text-gray-700"
-              }`}
-              onClick={() => setView("workflows")}
-            >
-              Workflows
-            </button>
-          </nav>
-
-          {view === "generate" ? (
-            <QuickGenerate />
-          ) : (
-            <div className="flex flex-1 min-h-0">
-              <Sidebar />
-              <div className="flex-1 flex flex-col min-w-0">
-                <Toolbar workflowView={workflowView} onWorkflowViewChange={setWorkflowView} />
-                <ErrorBanner />
-                {workflowView === "canvas" ? <WorkflowCanvas /> : <WorkflowOutputs onLoaded={() => setWorkflowView("canvas")} />}
-              </div>
+        <BrowserRouter>
+          <div className="flex flex-col h-full w-full">
+            <TopNav />
+            <div className="flex-1 min-h-0 flex flex-col">
+              <Routes>
+                <Route path="/" element={<Navigate to="/generate" replace />} />
+                <Route path="/generate" element={<QuickGenerate />} />
+                <Route path="/workflows" element={<WorkflowsList />} />
+                <Route path="/workflows/:id" element={<WorkflowEditor />} />
+                <Route path="*" element={<Navigate to="/generate" replace />} />
+              </Routes>
             </div>
-          )}
-        </div>
+          </div>
+        </BrowserRouter>
       </ReactFlowProvider>
     </WorkflowContext.Provider>
   );
