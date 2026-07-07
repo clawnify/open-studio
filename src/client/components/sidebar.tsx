@@ -1,9 +1,10 @@
-import { useState, type DragEvent } from "react";
+import { type DragEvent } from "react";
+import { Pencil, Wand2, Camera, Search, LayoutGrid, Scaling, type LucideIcon } from "lucide-react";
 import { useWorkflow } from "../context";
 
 interface NodeTypeEntry {
   type: string;
-  icon: string;
+  icon: LucideIcon;
   label: string;
   desc: string;
   /** Feature flag this node depends on; node is hidden when the flag is false. */
@@ -11,16 +12,16 @@ interface NodeTypeEntry {
 }
 
 const NODE_TYPES: NodeTypeEntry[] = [
-  { type: "prompt", icon: "\u270E", label: "Prompt", desc: "Text prompt input" },
-  { type: "generateImage", icon: "\u2699", label: "Generate Image", desc: "AI image generation", requires: "imageGen" },
-  { type: "imageInput", icon: "\uD83D\uDCF7", label: "Image Input", desc: "Reference image URL" },
-  { type: "analyze", icon: "\uD83D\uDD0E", label: "Analyze", desc: "Vision \u2192 text/JSON", requires: "openrouter" },
-  { type: "refine", icon: "\u2737", label: "Refine", desc: "Tile-based image refinement", requires: "imageGen" },
-  { type: "upscale", icon: "\u279a", label: "Upscale", desc: "fal.ai SeedVR image upscaler", requires: "fal" },
+  { type: "prompt", icon: Pencil, label: "Prompt", desc: "Text prompt input" },
+  { type: "generateImage", icon: Wand2, label: "Generate Image", desc: "AI image generation", requires: "imageGen" },
+  { type: "imageInput", icon: Camera, label: "Image Input", desc: "Reference image URL" },
+  { type: "analyze", icon: Search, label: "Analyze", desc: "Vision → text/JSON", requires: "openrouter" },
+  { type: "refine", icon: LayoutGrid, label: "Refine", desc: "Tile-based image refinement", requires: "imageGen" },
+  { type: "upscale", icon: Scaling, label: "Upscale", desc: "fal.ai SeedVR image upscaler", requires: "fal" },
 ];
 
 export function Sidebar() {
-  const { workflows, activeWorkflow, createWorkflow, selectWorkflow, deleteWorkflow, renameWorkflow, duplicateWorkflow, generations, features } = useWorkflow();
+  const { features } = useWorkflow();
   const imageGenAvailable = features.openrouter || features.openai;
   const visibleNodeTypes = NODE_TYPES.filter((nt) => {
     if (!nt.requires) return true;
@@ -29,83 +30,28 @@ export function Sidebar() {
     if (nt.requires === "imageGen") return imageGenAvailable;
     return true;
   });
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editName, setEditName] = useState("");
-  const [tab, setTab] = useState<"workflows" | "nodes" | "history">("nodes");
 
-  const startRename = (id: number, name: string) => { setEditingId(id); setEditName(name); };
-  const finishRename = async () => { if (editingId && editName.trim()) await renameWorkflow(editingId, editName.trim()); setEditingId(null); };
   const onDragStart = (e: DragEvent, type: string) => { e.dataTransfer?.setData("application/reactflow", type); if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; };
 
-  const tabClass = (t: string) =>
-    `flex-1 py-2 px-1 bg-transparent border-none text-xs font-medium cursor-pointer border-b-2 transition-all ${
-      tab === t ? "text-accent border-accent" : "text-gray-400 border-transparent hover:text-gray-600"
-    }`;
-
   return (
-    <aside className="w-[260px] bg-white border-r border-border-dim flex flex-col shrink-0">
-      <div className="flex border-b border-border-dim">
-        <button className={tabClass("nodes")} onClick={() => setTab("nodes")}>Nodes</button>
-        <button className={tabClass("workflows")} onClick={() => setTab("workflows")}>Workflows</button>
-        <button className={tabClass("history")} onClick={() => setTab("history")}>History</button>
+    <aside className="w-[260px] bg-surface border-r border-border flex flex-col shrink-0">
+      <div className="px-4 py-3 border-b border-border">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">Nodes</span>
       </div>
       <div className="flex-1 overflow-y-auto p-3">
-        {tab === "nodes" && (
-          <div>
-            <p className="text-gray-400 text-[11px] mb-2">Drag nodes onto the canvas</p>
-            {visibleNodeTypes.map((nt) => (
-              <div key={nt.type} className="flex items-center gap-2.5 p-2.5 bg-surface-card border border-border-dim rounded-lg cursor-grab mb-1.5 transition-all hover:border-accent hover:bg-accent-light active:cursor-grabbing" draggable onDragStart={(e) => onDragStart(e, nt.type)}>
-                <span className="text-lg w-7 text-center">{nt.icon}</span>
-                <div className="flex flex-col">
-                  <span className="text-xs font-semibold text-gray-800">{nt.label}</span>
-                  <span className="text-[11px] text-gray-400">{nt.desc}</span>
-                </div>
+        <p className="text-muted text-[11px] mb-2">Drag onto the canvas</p>
+        {visibleNodeTypes.map((nt) => {
+          const Icon = nt.icon;
+          return (
+            <div key={nt.type} className="flex items-center gap-2.5 p-2.5 bg-surface-sunken border border-border rounded-md cursor-grab mb-1.5 transition-all hover:border-border-strong active:cursor-grabbing" draggable onDragStart={(e) => onDragStart(e, nt.type)}>
+              <Icon className="size-4 w-7 shrink-0 text-muted" strokeWidth={2} />
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-foreground">{nt.label}</span>
+                <span className="text-[11px] text-muted">{nt.desc}</span>
               </div>
-            ))}
-          </div>
-        )}
-        {tab === "workflows" && (
-          <div className="flex flex-col gap-1.5">
-            <button className="w-full flex justify-center items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold border-none cursor-pointer bg-accent text-white hover:bg-accent-hover mb-2" onClick={createWorkflow}>+ New Workflow</button>
-            {workflows.map((wf) => (
-              <div key={wf.id} className={`flex items-center px-2.5 py-2 rounded-lg border transition-all group ${activeWorkflow?.id === wf.id ? "border-accent bg-accent-light" : "border-border-dim bg-surface-card"}`}>
-                {editingId === wf.id ? (
-                  <input className="flex-1 bg-white border border-accent rounded text-gray-900 text-xs px-1.5 py-0.5 outline-none" value={editName} onChange={(e) => setEditName(e.target.value)} onBlur={finishRename} onKeyDown={(e) => { if (e.key === "Enter") finishRename(); if (e.key === "Escape") setEditingId(null); }} autoFocus />
-                ) : (
-                  <span className="flex-1 cursor-pointer text-xs font-medium truncate text-gray-700" onClick={() => selectWorkflow(wf.id)} onDoubleClick={() => startRename(wf.id, wf.name)}>{wf.name}</span>
-                )}
-                <button
-                  className="bg-transparent border-none text-gray-400 cursor-pointer px-1 leading-none opacity-0 group-hover:opacity-100 transition-opacity hover:text-accent"
-                  title="Duplicate"
-                  onClick={(e) => { e.stopPropagation(); duplicateWorkflow(wf.id); }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                  </svg>
-                </button>
-                <button className="workflow-delete bg-transparent border-none text-gray-400 text-base cursor-pointer px-1 leading-none opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-500" title="Delete" onClick={(e) => { e.stopPropagation(); deleteWorkflow(wf.id); }}>&times;</button>
-              </div>
-            ))}
-            {workflows.length === 0 && <p className="text-gray-400 text-[11px] text-center py-4">No workflows yet</p>}
-          </div>
-        )}
-        {tab === "history" && (
-          <div className="flex flex-col gap-2">
-            {generations.length === 0 && <p className="text-gray-400 text-[11px] text-center py-4">No generations yet.</p>}
-            {generations.map((gen) => (
-              <div key={gen.id} className="bg-surface-card border border-border-dim rounded-lg p-2">
-                <div className="flex justify-between items-center mb-1">
-                  <span className="text-[11px] font-semibold text-gray-500">{gen.model.split("/").pop()}</span>
-                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full uppercase ${gen.status === "success" ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-500"}`}>{gen.status}</span>
-                </div>
-                <p className="text-[11px] text-gray-400 mb-1.5">{gen.prompt.slice(0, 80)}{gen.prompt.length > 80 ? "..." : ""}</p>
-                {gen.image_url && <img className="w-full rounded-lg object-cover max-h-[120px]" src={gen.image_url} alt="Generated" />}
-                {gen.error && <p className="text-[11px] text-red-500">{gen.error}</p>}
-              </div>
-            ))}
-          </div>
-        )}
+            </div>
+          );
+        })}
       </div>
     </aside>
   );

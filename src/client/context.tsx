@@ -6,6 +6,7 @@ export interface Features {
   openrouter: boolean;
   openai: boolean;
   fal: boolean;
+  anthropic: boolean;
 }
 
 export interface LeafResult {
@@ -21,11 +22,11 @@ export interface WorkflowContextValue {
   // Workflow list
   workflows: Workflow[];
   activeWorkflow: Workflow | null;
-  createWorkflow: () => Promise<void>;
-  selectWorkflow: (id: number) => Promise<void>;
-  deleteWorkflow: (id: number) => Promise<void>;
-  renameWorkflow: (id: number, name: string) => Promise<void>;
-  duplicateWorkflow: (id: number) => Promise<void>;
+  createWorkflow: () => Promise<Workflow | undefined>;
+  selectWorkflow: (id: string) => Promise<void>;
+  deleteWorkflow: (id: string) => Promise<void>;
+  renameWorkflow: (id: string, name: string) => Promise<void>;
+  duplicateWorkflow: (id: string) => Promise<void>;
 
   // Flow state
   nodes: Node[];
@@ -56,14 +57,16 @@ export interface WorkflowContextValue {
   // Generations
   generations: Generation[];
   refreshGenerations: () => Promise<void>;
+  /** Delete a generation row + its R2 blob (if owned). Optimistic. */
+  deleteGeneration: (id: string) => Promise<void>;
   /** Load a workflow_runs snapshot into the canvas — does not auto-save. */
-  loadRun: (runId: number) => Promise<void>;
+  loadRun: (runId: string) => Promise<void>;
   /**
    * Load a past run, apply feedback text to the named GenerateImage node, and
    * re-run only that node against the loaded snapshot. Used by the Outputs
    * section's Feedback flow.
    */
-  runOutputFeedback: (runId: number, nodeId: string, feedback: string) => Promise<void>;
+  runOutputFeedback: (runId: string, nodeId: string, feedback: string) => Promise<void>;
 
   // Agent mode
   isAgent: boolean;

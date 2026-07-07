@@ -318,7 +318,7 @@ export function PillEditor({ value, onChange, referenceNodes, placeholder, class
       <div
         ref={editorRef}
         contentEditable
-        className={className ?? "prompt-editor nodrag nowheel w-full bg-surface-card border border-border-dim rounded text-gray-800 text-xs p-1.5 outline-none transition-colors focus:border-accent"}
+        className={className ?? "prompt-editor nodrag nowheel w-full bg-surface-sunken border border-border rounded-sm text-foreground text-xs p-1.5 outline-none transition-colors focus:border-ring"}
         style={{ minHeight: "64px", maxHeight: "240px", overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", ...style }}
         onInput={onInput}
         onKeyDown={onKeyDown}
@@ -326,8 +326,8 @@ export function PillEditor({ value, onChange, referenceNodes, placeholder, class
         data-placeholder={referenceNodes.length > 0 ? (placeholder ?? "Type / to reference another node...") : (placeholder ?? "Enter your prompt...")}
       />
       {showMenu && filtered.length > 0 && (
-        <div className="nodrag absolute left-0 right-0 top-full mt-0.5 bg-white border border-border-dim rounded-lg shadow-lg z-50 overflow-hidden">
-          <div className="px-2 py-1 text-[10px] text-gray-400 uppercase tracking-wide border-b border-border-dim">Insert reference</div>
+        <div className="nodrag absolute left-0 right-0 top-full mt-0.5 bg-surface border border-border rounded-md z-50 overflow-hidden">
+          <div className="px-2 py-1 text-[10px] text-muted uppercase tracking-wide border-b border-border">Insert reference</div>
           {filtered.map((n, i) => {
             const label = (n.data as Record<string, unknown>).label as string;
             const nd = n.data as Record<string, unknown>;
@@ -337,15 +337,15 @@ export function PillEditor({ value, onChange, referenceNodes, placeholder, class
               <button
                 key={n.id}
                 className={`nodrag w-full text-left px-2 py-1.5 border-none cursor-pointer text-xs flex flex-col gap-0.5 ${
-                  i === menuIndex ? "bg-accent-light text-accent" : "bg-transparent text-gray-700 hover:bg-surface-card"
+                  i === menuIndex ? "bg-surface-sunken text-foreground" : "bg-transparent text-muted hover:bg-surface-sunken"
                 }`}
                 onMouseDown={(e) => { e.preventDefault(); insertReference(n.id); }}
               >
                 <span className="font-semibold flex items-center gap-1.5">
                   {label}
-                  <span className="text-[9px] uppercase tracking-wide text-gray-400 font-medium">{typeBadge}</span>
+                  <span className="text-[9px] uppercase tracking-wide text-faint font-medium">{typeBadge}</span>
                 </span>
-                {preview && <span className="text-[10px] text-gray-400 truncate">{preview.slice(0, 50)}{preview.length > 50 ? "..." : ""}</span>}
+                {preview && <span className="text-[10px] text-faint truncate">{preview.slice(0, 50)}{preview.length > 50 ? "..." : ""}</span>}
               </button>
             );
           })}

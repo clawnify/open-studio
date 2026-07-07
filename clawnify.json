@@ -9,6 +9,6 @@
   },
   "env": {
     "required": ["OPENROUTER_API_KEY"],
-    "optional": ["OPENAI_API_KEY", "FAL_API_KEY"]
+    "optional": ["OPENAI_API_KEY", "FAL_API_KEY", "ANTHROPIC_API_KEY"]
   }
 }
