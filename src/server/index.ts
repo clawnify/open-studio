@@ -1,10 +1,14 @@
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { initDB, query, get, run } from "./db.js";
+import { createApp, createRoute, z, OpenAPIHono } from "@clawnify/app";
+import { query, get, run } from "./db.js";
 import { initUploads, putUpload, getUpload, deleteUpload, readUploadAsBase64DataUrl } from "./uploads.js";
 
 type Env = { Bindings: { DB: D1Database; UPLOADS: R2Bucket; OPENROUTER_API_KEY: string; FAL_API_KEY: string; OPENAI_API_KEY?: string; ANTHROPIC_API_KEY?: string } };
 
-const app = new OpenAPIHono<Env>();
+const app = createApp<Env>({
+  title: "Open Studio",
+  version: "1.0.0",
+  description: "Node-based AI image workflow studio — generate, analyze, refine, and upscale images.",
+});
 // Public sub-app — every route here MUST be registered with publicApp.openapi(...)
 // so it shows up in /api/v1/openapi.json. Internal routes stay on `app` and are
 // excluded from the public spec by virtue of living in a different app instance.
@@ -15,8 +19,8 @@ app.onError((err, c) => {
   return c.json({ error: err.message || String(err) }, 500);
 });
 
+// D1 initDB is baked into createApp — only uploads need per-request init here.
 app.use("*", async (c, next) => {
-  initDB(c.env);
   initUploads(c.env.UPLOADS);
   await next();
 });
