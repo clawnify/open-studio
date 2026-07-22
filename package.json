@@ -7,6 +7,7 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@clawnify/app": "^0.1.0",
     "@clawnify/db": "^0.2.0",
     "@fontsource-variable/geist": "^5.2.8",
     "@hono/zod-openapi": "^0.18.0",
